@@ -5,10 +5,52 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/andybalholm/cascadia"
 	"golang.org/x/net/html"
 )
+
+// CSS selectors are compiled once and reused: goquery's Find recompiles the
+// selector on every call, which is expensive for the hot chapter/book paths.
+var (
+	selectorMu    sync.RWMutex
+	selectorCache = map[string]cascadia.Selector{}
+)
+
+const maxSelectorCache = 4096
+
+func compileSelector(selector string) cascadia.Selector {
+	selectorMu.RLock()
+	m := selectorCache[selector]
+	selectorMu.RUnlock()
+	if m != nil {
+		return m
+	}
+	compiled, err := cascadia.Compile(selector)
+	if err != nil {
+		return nil
+	}
+	selectorMu.Lock()
+	if len(selectorCache) >= maxSelectorCache {
+		selectorCache = map[string]cascadia.Selector{}
+	}
+	selectorCache[selector] = compiled
+	selectorMu.Unlock()
+	return compiled
+}
+
+func findSelection(sel *goquery.Selection, selector string) *goquery.Selection {
+	if sel == nil || sel.Length() == 0 {
+		return &goquery.Selection{}
+	}
+	m := compileSelector(selector)
+	if m == nil {
+		return &goquery.Selection{}
+	}
+	return sel.FindMatcher(m)
+}
 
 // jsoupStringList implements the legado jsoup rule dialect:
 // tag.div.-1, class.x@text, children@tag.li@tag.a@text, [1,3:-2] filters, CSS selectors.
@@ -32,7 +74,7 @@ func jsoupStringList(content any, ruleStr string) []string {
 		if last < 0 {
 			return resultLast(sel, "")
 		}
-		return resultLast(sel.Find(ruleStr[:last]), ruleStr[last+1:])
+		return resultLast(findSelection(sel, ruleStr[:last]), ruleStr[last+1:])
 	}
 
 	parts, sep := splitRules(ruleStr, "&&", "||", "%%")
@@ -77,7 +119,7 @@ func jsoupElements(content any, ruleStr string) []any {
 	}
 	var out []any
 	if isCSS {
-		sel.Find(ruleStr).Each(func(_ int, s *goquery.Selection) {
+		findSelection(sel, ruleStr).Each(func(_ int, s *goquery.Selection) {
 			out = append(out, s)
 		})
 		return out
@@ -397,15 +439,15 @@ func getElementsSingle(sel *goquery.Selection, rule string) *goquery.Selection {
 			elements = sel.Children()
 		case "class":
 			if len(parts) > 1 {
-				elements = sel.Find("." + joinDots(parts[1:]))
+				elements = findSelection(sel, "."+joinDots(parts[1:]))
 			}
 		case "tag":
 			if len(parts) > 1 {
-				elements = sel.Find(joinDots(parts[1:]))
+				elements = findSelection(sel, joinDots(parts[1:]))
 			}
 		case "id":
 			if len(parts) > 1 {
-				elements = sel.Find("#" + joinDots(parts[1:]))
+				elements = findSelection(sel, "#"+joinDots(parts[1:]))
 			}
 		case "text":
 			if len(parts) > 1 {
@@ -413,7 +455,7 @@ func getElementsSingle(sel *goquery.Selection, rule string) *goquery.Selection {
 				elements = filterOwnText(sel, needle)
 			}
 		default:
-			elements = sel.Find(before)
+			elements = findSelection(sel, before)
 		}
 	}
 	if elements == nil {
@@ -451,10 +493,7 @@ func joinDots(parts []string) string {
 }
 
 func emptySelection(sel *goquery.Selection) *goquery.Selection {
-	if sel == nil {
-		return &goquery.Selection{}
-	}
-	return sel.Find("__legado_empty_never_match__")
+	return &goquery.Selection{}
 }
 
 func appendSelection(base, add *goquery.Selection) *goquery.Selection {
@@ -469,7 +508,7 @@ func appendSelection(base, add *goquery.Selection) *goquery.Selection {
 func filterOwnText(sel *goquery.Selection, needle string) *goquery.Selection {
 	out := emptySelection(sel)
 	sel.Each(func(_ int, s *goquery.Selection) {
-		s.Find("*").AddBack().Each(func(_ int, e *goquery.Selection) {
+		findSelection(s, "*").AddBack().Each(func(_ int, e *goquery.Selection) {
 			if strings.Contains(ownText(e), needle) {
 				out = out.AddNodes(e.Nodes...)
 			}

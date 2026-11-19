@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/765362546/novel-reader-go/internal/model"
 	"golang.org/x/net/html"
@@ -28,18 +29,45 @@ var (
 	putPattern     = regexp.MustCompile(`(?i)@put:(\{[^}]+?\})`)
 	getPattern     = regexp.MustCompile(`(?i)@get:\{([^}]+)\}`)
 	regexGroupPatt = regexp.MustCompile(`\$\d{1,2}`)
+
+	regexCacheMu sync.RWMutex
+	regexCache   = map[string]*regexp.Regexp{}
 )
+
+const maxRegexCache = 2048
+
+// compiledRegexp caches compiled rule patterns; chapter rules are evaluated
+// repeatedly against every page, so recompiling the same regexp is wasteful.
+func compiledRegexp(pattern string) (*regexp.Regexp, error) {
+	regexCacheMu.RLock()
+	re := regexCache[pattern]
+	regexCacheMu.RUnlock()
+	if re != nil {
+		return re, nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	regexCacheMu.Lock()
+	if len(regexCache) >= maxRegexCache {
+		regexCache = map[string]*regexp.Regexp{}
+	}
+	regexCache[pattern] = re
+	regexCacheMu.Unlock()
+	return re, nil
+}
 
 // Analyze is the Go port of io.legado.app.model.analyzeRule.AnalyzeRule.
 type Analyze struct {
-	Content       any
-	BaseUrl       string
-	RedirectUrl   string
-	Book          *model.Book
-	Chapter       *model.BookChapter
-	Source        *model.BookSource
+	Content        any
+	BaseUrl        string
+	RedirectUrl    string
+	Book           *model.Book
+	Chapter        *model.BookChapter
+	Source         *model.BookSource
 	NextChapterURL string
-	Vars          map[string]string
+	Vars           map[string]string
 
 	// isJSON mirrors legado: a JSON body makes every plain rule a JsonPath rule.
 	isJSON bool
@@ -577,7 +605,7 @@ func (a *Analyze) applyPutJSON(jsonStr string) {
 }
 
 func applyReplace(s, pattern, replacement string, first bool) string {
-	re, err := regexp.Compile(pattern)
+	re, err := compiledRegexp(pattern)
 	if err != nil {
 		if first {
 			return strings.Replace(s, pattern, replacement, 1)
@@ -610,7 +638,7 @@ func regexElements(content any, rule string) []any {
 	if len(regs) == 0 {
 		return nil
 	}
-	re, err := regexp.Compile(regs[0])
+	re, err := compiledRegexp(regs[0])
 	if err != nil {
 		return nil
 	}
@@ -629,7 +657,7 @@ func regexLists(content any, rule string, all bool) [][]string {
 	if len(regs) == 0 {
 		return nil
 	}
-	re, err := regexp.Compile(regs[0])
+	re, err := compiledRegexp(regs[0])
 	if err != nil {
 		return nil
 	}

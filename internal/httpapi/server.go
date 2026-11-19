@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/765362546/novel-reader-go/internal/config"
 	"github.com/765362546/novel-reader-go/internal/logging"
 	"github.com/765362546/novel-reader-go/internal/model"
@@ -24,9 +26,9 @@ var logger = logging.Component("httpapi")
 
 // ReturnData is the unified API response.
 type ReturnData struct {
-	IsSuccess bool `json:"isSuccess"`
+	IsSuccess bool   `json:"isSuccess"`
 	ErrorMsg  string `json:"errorMsg"`
-	Data      any `json:"data"`
+	Data      any    `json:"data"`
 }
 
 func success(data any) *ReturnData {
@@ -56,10 +58,16 @@ type Server struct {
 	Store    *store.Store
 	Sessions *Sessions
 
-	cacheMu      sync.Mutex
+	cacheMu       sync.Mutex
 	bookInfoCache map[string]*model.Book
 	invalidCache  map[string]map[string]invalidBookSource
 	shelfMu       sync.Mutex
+
+	sourceMu      sync.RWMutex
+	sourceIndexes map[string]*bookSourceIndex
+
+	breakerMu sync.Mutex
+	breakers  map[string]*sourceBreaker
 }
 
 func New(app *config.App) *Server {
@@ -79,11 +87,13 @@ func New(app *config.App) *Server {
 	}
 
 	return &Server{
-		App:      app,
-		Store:    store,
-		Sessions: NewSessions(),
+		App:           app,
+		Store:         store,
+		Sessions:      NewSessions(),
 		bookInfoCache: map[string]*model.Book{},
 		invalidCache:  map[string]map[string]invalidBookSource{},
+		sourceIndexes: map[string]*bookSourceIndex{},
+		breakers:      map[string]*sourceBreaker{},
 	}
 }
 
@@ -121,8 +131,8 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func (s *Server) Run() error {
-	mux := http.NewServeMux()
-	s.routes(mux)
+	r := chi.NewRouter()
+	s.routes(r)
 	addr := fmt.Sprintf(":%d", s.App.Port)
 	logger.Info("http server listening",
 		"addr", addr,
@@ -131,7 +141,7 @@ func (s *Server) Run() error {
 		"secure", s.App.Secure,
 	)
 	s.StartScheduler()
-	handler := requestLogger(recovery(mux))
+	handler := requestLogger(recovery(r))
 	return http.ListenAndServe(addr, handler)
 }
 
@@ -218,145 +228,139 @@ func recovery(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) routes(mux *http.ServeMux) {
+func (s *Server) routes(r chi.Router) {
 	// system
-	mux.HandleFunc("GET /reader3/getSystemInfo", s.api(s.getSystemInfo))
+	r.Get("/reader3/getSystemInfo", s.api(s.getSystemInfo))
 
 	// book source
-	mux.HandleFunc("POST /reader3/saveBookSource", s.api(s.saveBookSource))
-	mux.HandleFunc("POST /reader3/saveBookSources", s.api(s.saveBookSources))
-	mux.HandleFunc("GET /reader3/getBookSource", s.api(s.getBookSource))
-	mux.HandleFunc("POST /reader3/getBookSource", s.api(s.getBookSource))
-	mux.HandleFunc("GET /reader3/getBookSources", s.api(s.getBookSources))
-	mux.HandleFunc("POST /reader3/getBookSources", s.api(s.getBookSources))
-	mux.HandleFunc("POST /reader3/deleteAllBookSources", s.api(s.deleteAllBookSources))
-	mux.HandleFunc("POST /reader3/deleteBookSource", s.api(s.deleteBookSource))
-	mux.HandleFunc("POST /reader3/deleteBookSources", s.api(s.deleteBookSources))
-	mux.HandleFunc("POST /reader3/readSourceFile", s.api(s.readSourceFile))
-	mux.HandleFunc("POST /reader3/readRemoteSourceFile", s.api(s.readRemoteSourceFile))
-	mux.HandleFunc("POST /reader3/setAsDefaultBookSources", s.api(s.setAsDefaultBookSources))
-	mux.HandleFunc("POST /reader3/deleteUserBookSource", s.api(s.deleteUserBookSource))
-	mux.HandleFunc("POST /reader3/deleteBookSourcesFile", s.api(s.deleteBookSourcesFile))
+	r.Post("/reader3/saveBookSource", s.api(s.saveBookSource))
+	r.Post("/reader3/saveBookSources", s.api(s.saveBookSources))
+	r.Get("/reader3/getBookSource", s.api(s.getBookSource))
+	r.Post("/reader3/getBookSource", s.api(s.getBookSource))
+	r.Get("/reader3/getBookSources", s.api(s.getBookSources))
+	r.Post("/reader3/getBookSources", s.api(s.getBookSources))
+	r.Post("/reader3/deleteAllBookSources", s.api(s.deleteAllBookSources))
+	r.Post("/reader3/deleteBookSource", s.api(s.deleteBookSource))
+	r.Post("/reader3/deleteBookSources", s.api(s.deleteBookSources))
+	r.Post("/reader3/readSourceFile", s.api(s.readSourceFile))
+	r.Post("/reader3/readRemoteSourceFile", s.api(s.readRemoteSourceFile))
+	r.Post("/reader3/setAsDefaultBookSources", s.api(s.setAsDefaultBookSources))
+	r.Post("/reader3/deleteUserBookSource", s.api(s.deleteUserBookSource))
+	r.Post("/reader3/deleteBookSourcesFile", s.api(s.deleteBookSourcesFile))
 
 	// books
-	mux.HandleFunc("GET /reader3/getBookshelf", s.api(s.getBookshelf))
-	mux.HandleFunc("GET /reader3/getShelfBook", s.api(s.getShelfBook))
-	mux.HandleFunc("POST /reader3/saveBook", s.api(s.saveBook))
-	mux.HandleFunc("POST /reader3/deleteBook", s.api(s.deleteBook))
-	mux.HandleFunc("POST /reader3/deleteBooks", s.api(s.deleteBooks))
-	mux.HandleFunc("POST /reader3/getInvalidBookSources", s.api(s.getInvalidBookSources))
-	mux.HandleFunc("POST /reader3/exploreBook", s.api(s.exploreBook))
-	mux.HandleFunc("GET /reader3/exploreBook", s.api(s.exploreBook))
-	mux.HandleFunc("GET /reader3/searchBook", s.api(s.searchBook))
-	mux.HandleFunc("POST /reader3/searchBook", s.api(s.searchBook))
-	mux.HandleFunc("GET /reader3/searchBookMulti", s.api(s.searchBookMulti))
-	mux.HandleFunc("POST /reader3/searchBookMulti", s.api(s.searchBookMulti))
-	mux.HandleFunc("GET /reader3/searchBookMultiSSE", s.apiSSE(s.searchBookMultiSSE))
-	mux.HandleFunc("GET /reader3/getBookInfo", s.api(s.getBookInfo))
-	mux.HandleFunc("POST /reader3/getBookInfo", s.api(s.getBookInfo))
-	mux.HandleFunc("GET /reader3/getChapterList", s.api(s.getChapterList))
-	mux.HandleFunc("POST /reader3/getChapterList", s.api(s.getChapterList))
-	mux.HandleFunc("GET /reader3/getBookContent", s.api(s.getBookContent))
-	mux.HandleFunc("POST /reader3/getBookContent", s.api(s.getBookContent))
-	mux.HandleFunc("POST /reader3/saveBookProgress", s.api(s.saveBookProgress))
-	mux.HandleFunc("GET /reader3/cover", s.api(s.getBookCover))
-	mux.HandleFunc("GET /reader3/searchBookSource", s.api(s.searchBookSource))
-	mux.HandleFunc("POST /reader3/searchBookSource", s.api(s.searchBookSource))
-	mux.HandleFunc("GET /reader3/getAvailableBookSource", s.api(s.getAvailableBookSource))
-	mux.HandleFunc("POST /reader3/getAvailableBookSource", s.api(s.getAvailableBookSource))
-	mux.HandleFunc("GET /reader3/searchBookSourceSSE", s.apiSSE(s.searchBookSourceSSE))
-	mux.HandleFunc("GET /reader3/setBookSource", s.api(s.setBookSource))
-	mux.HandleFunc("POST /reader3/setBookSource", s.api(s.setBookSource))
-	mux.HandleFunc("POST /reader3/saveBookGroupId", s.api(s.saveBookGroupId))
-	mux.HandleFunc("POST /reader3/addBookGroupMulti", s.api(s.addBookGroupMulti))
-	mux.HandleFunc("POST /reader3/removeBookGroupMulti", s.api(s.removeBookGroupMulti))
-	mux.HandleFunc("POST /reader3/importBookPreview", s.api(s.importBookPreview))
-	mux.HandleFunc("POST /reader3/refreshLocalBook", s.api(s.refreshLocalBook))
-	mux.HandleFunc("GET /reader3/getTxtTocRules", s.api(s.getTxtTocRules))
-	mux.HandleFunc("POST /reader3/getChapterListByRule", s.api(s.getChapterListByRule))
-	mux.HandleFunc("GET /reader3/getBookGroups", s.api(s.getBookGroups))
-	mux.HandleFunc("POST /reader3/saveBookGroup", s.api(s.saveBookGroup))
-	mux.HandleFunc("POST /reader3/deleteBookGroup", s.api(s.deleteBookGroup))
-	mux.HandleFunc("POST /reader3/saveBookGroupOrder", s.api(s.saveBookGroupOrder))
-	mux.HandleFunc("GET /reader3/getLocalStoreFileList", s.api(s.getLocalStoreFileList))
-	mux.HandleFunc("GET /reader3/getLocalStoreFile", s.api(s.getLocalStoreFile))
-	mux.HandleFunc("POST /reader3/deleteLocalStoreFile", s.api(s.deleteLocalStoreFile))
-	mux.HandleFunc("POST /reader3/deleteLocalStoreFileList", s.api(s.deleteLocalStoreFileList))
-	mux.HandleFunc("POST /reader3/importFromLocalPathPreview", s.api(s.importFromLocalPathPreview))
-	mux.HandleFunc("POST /reader3/uploadFileToLocalStore", s.api(s.uploadFileToLocalStore))
-	mux.HandleFunc("GET /reader3/bookSourceDebugSSE", s.apiSSE(s.bookSourceDebugSSE))
-	mux.HandleFunc("GET /reader3/cacheBookSSE", s.apiSSE(s.cacheBookSSE))
-	mux.HandleFunc("GET /reader3/getShelfBookWithCacheInfo", s.api(s.getShelfBookWithCacheInfo))
-	mux.HandleFunc("POST /reader3/deleteBookCache", s.api(s.deleteBookCache))
-	mux.HandleFunc("GET /reader3/exportBook", s.api(s.exportBook))
-	mux.HandleFunc("POST /reader3/exportBook", s.api(s.exportBook))
-	mux.HandleFunc("GET /reader3/searchBookContent", s.api(s.searchBookContent))
-	mux.HandleFunc("POST /reader3/searchBookContent", s.api(s.searchBookContent))
+	r.Get("/reader3/getBookshelf", s.api(s.getBookshelf))
+	r.Get("/reader3/getShelfBook", s.api(s.getShelfBook))
+	r.Post("/reader3/saveBook", s.api(s.saveBook))
+	r.Post("/reader3/deleteBook", s.api(s.deleteBook))
+	r.Post("/reader3/deleteBooks", s.api(s.deleteBooks))
+	r.Post("/reader3/getInvalidBookSources", s.api(s.getInvalidBookSources))
+	r.Post("/reader3/exploreBook", s.api(s.exploreBook))
+	r.Get("/reader3/exploreBook", s.api(s.exploreBook))
+	r.Get("/reader3/searchBook", s.api(s.searchBook))
+	r.Post("/reader3/searchBook", s.api(s.searchBook))
+	r.Get("/reader3/searchBookMulti", s.api(s.searchBookMulti))
+	r.Post("/reader3/searchBookMulti", s.api(s.searchBookMulti))
+	r.Get("/reader3/searchBookMultiSSE", s.apiSSE(s.searchBookMultiSSE))
+	r.Get("/reader3/getBookInfo", s.api(s.getBookInfo))
+	r.Post("/reader3/getBookInfo", s.api(s.getBookInfo))
+	r.Get("/reader3/getChapterList", s.api(s.getChapterList))
+	r.Post("/reader3/getChapterList", s.api(s.getChapterList))
+	r.Get("/reader3/getBookContent", s.api(s.getBookContent))
+	r.Post("/reader3/getBookContent", s.api(s.getBookContent))
+	r.Post("/reader3/saveBookProgress", s.api(s.saveBookProgress))
+	r.Get("/reader3/cover", s.api(s.getBookCover))
+	r.Get("/reader3/searchBookSource", s.api(s.searchBookSource))
+	r.Post("/reader3/searchBookSource", s.api(s.searchBookSource))
+	r.Get("/reader3/getAvailableBookSource", s.api(s.getAvailableBookSource))
+	r.Post("/reader3/getAvailableBookSource", s.api(s.getAvailableBookSource))
+	r.Get("/reader3/searchBookSourceSSE", s.apiSSE(s.searchBookSourceSSE))
+	r.Get("/reader3/setBookSource", s.api(s.setBookSource))
+	r.Post("/reader3/setBookSource", s.api(s.setBookSource))
+	r.Post("/reader3/saveBookGroupId", s.api(s.saveBookGroupId))
+	r.Post("/reader3/addBookGroupMulti", s.api(s.addBookGroupMulti))
+	r.Post("/reader3/removeBookGroupMulti", s.api(s.removeBookGroupMulti))
+	r.Post("/reader3/importBookPreview", s.api(s.importBookPreview))
+	r.Post("/reader3/refreshLocalBook", s.api(s.refreshLocalBook))
+	r.Get("/reader3/getTxtTocRules", s.api(s.getTxtTocRules))
+	r.Post("/reader3/getChapterListByRule", s.api(s.getChapterListByRule))
+	r.Get("/reader3/getBookGroups", s.api(s.getBookGroups))
+	r.Post("/reader3/saveBookGroup", s.api(s.saveBookGroup))
+	r.Post("/reader3/deleteBookGroup", s.api(s.deleteBookGroup))
+	r.Post("/reader3/saveBookGroupOrder", s.api(s.saveBookGroupOrder))
+	r.Get("/reader3/getLocalStoreFileList", s.api(s.getLocalStoreFileList))
+	r.Get("/reader3/getLocalStoreFile", s.api(s.getLocalStoreFile))
+	r.Post("/reader3/deleteLocalStoreFile", s.api(s.deleteLocalStoreFile))
+	r.Post("/reader3/deleteLocalStoreFileList", s.api(s.deleteLocalStoreFileList))
+	r.Post("/reader3/importFromLocalPathPreview", s.api(s.importFromLocalPathPreview))
+	r.Post("/reader3/uploadFileToLocalStore", s.api(s.uploadFileToLocalStore))
+	r.Get("/reader3/bookSourceDebugSSE", s.apiSSE(s.bookSourceDebugSSE))
+	r.Get("/reader3/cacheBookSSE", s.apiSSE(s.cacheBookSSE))
+	r.Get("/reader3/getShelfBookWithCacheInfo", s.api(s.getShelfBookWithCacheInfo))
+	r.Post("/reader3/deleteBookCache", s.api(s.deleteBookCache))
+	r.Get("/reader3/exportBook", s.api(s.exportBook))
+	r.Post("/reader3/exportBook", s.api(s.exportBook))
+	r.Get("/reader3/searchBookContent", s.api(s.searchBookContent))
+	r.Post("/reader3/searchBookContent", s.api(s.searchBookContent))
 
 	// user
-	mux.HandleFunc("POST /reader3/uploadFile", s.api(s.uploadFile))
-	mux.HandleFunc("POST /reader3/deleteFile", s.api(s.deleteFile))
-	mux.HandleFunc("POST /reader3/login", s.api(s.login))
-	mux.HandleFunc("POST /reader3/logout", s.api(s.logout))
-	mux.HandleFunc("GET /reader3/getUserInfo", s.api(s.getUserInfo))
-	mux.HandleFunc("POST /reader3/saveUserConfig", s.api(s.saveUserConfig))
-	mux.HandleFunc("GET /reader3/getUserConfig", s.api(s.getUserConfig))
-	mux.HandleFunc("GET /reader3/getUserList", s.api(s.getUserList))
-	mux.HandleFunc("POST /reader3/deleteUsers", s.api(s.deleteUsers))
-	mux.HandleFunc("POST /reader3/addUser", s.api(s.addUser))
-	mux.HandleFunc("POST /reader3/resetPassword", s.api(s.resetPassword))
-	mux.HandleFunc("POST /reader3/updateUser", s.api(s.updateUser))
+	r.Post("/reader3/uploadFile", s.api(s.uploadFile))
+	r.Post("/reader3/deleteFile", s.api(s.deleteFile))
+	r.Post("/reader3/login", s.api(s.login))
+	r.Post("/reader3/logout", s.api(s.logout))
+	r.Get("/reader3/getUserInfo", s.api(s.getUserInfo))
+	r.Post("/reader3/saveUserConfig", s.api(s.saveUserConfig))
+	r.Get("/reader3/getUserConfig", s.api(s.getUserConfig))
+	r.Get("/reader3/getUserList", s.api(s.getUserList))
+	r.Post("/reader3/deleteUsers", s.api(s.deleteUsers))
+	r.Post("/reader3/addUser", s.api(s.addUser))
+	r.Post("/reader3/resetPassword", s.api(s.resetPassword))
+	r.Post("/reader3/updateUser", s.api(s.updateUser))
 
 	// webdav
-	mux.HandleFunc("GET /reader3/getWebdavFileList", s.api(s.getWebdavFileList))
-	mux.HandleFunc("GET /reader3/getWebdavFile", s.api(s.getWebdavFile))
-	mux.HandleFunc("POST /reader3/uploadFileToWebdav", s.api(s.uploadFileToWebdav))
-	mux.HandleFunc("GET /reader3/deleteWebdavFile", s.api(s.deleteWebdavFile))
-	mux.HandleFunc("POST /reader3/deleteWebdavFile", s.api(s.deleteWebdavFile))
-	mux.HandleFunc("POST /reader3/deleteWebdavFileList", s.api(s.deleteWebdavFileList))
-	mux.HandleFunc("POST /reader3/restoreFromWebdav", s.api(s.restoreFromWebdav))
-	mux.HandleFunc("POST /reader3/backupToWebdav", s.api(s.backupToWebdav))
-	mux.HandleFunc("PROPFIND /reader3/webdav/{path...}", s.webdavHandler)
-	mux.HandleFunc("MKCOL /reader3/webdav/{path...}", s.webdavHandler)
-	mux.HandleFunc("PUT /reader3/webdav/{path...}", s.webdavHandler)
-	mux.HandleFunc("GET /reader3/webdav/{path...}", s.webdavHandler)
-	mux.HandleFunc("DELETE /reader3/webdav/{path...}", s.webdavHandler)
-	mux.HandleFunc("MOVE /reader3/webdav/{path...}", s.webdavHandler)
-	mux.HandleFunc("COPY /reader3/webdav/{path...}", s.webdavHandler)
-	mux.HandleFunc("LOCK /reader3/webdav/{path...}", s.webdavHandler)
-	mux.HandleFunc("UNLOCK /reader3/webdav/{path...}", s.webdavHandler)
-	mux.HandleFunc("OPTIONS /reader3/webdav/{path...}", s.webdavHandler)
+	r.Get("/reader3/getWebdavFileList", s.api(s.getWebdavFileList))
+	r.Get("/reader3/getWebdavFile", s.api(s.getWebdavFile))
+	r.Post("/reader3/uploadFileToWebdav", s.api(s.uploadFileToWebdav))
+	r.Get("/reader3/deleteWebdavFile", s.api(s.deleteWebdavFile))
+	r.Post("/reader3/deleteWebdavFile", s.api(s.deleteWebdavFile))
+	r.Post("/reader3/deleteWebdavFileList", s.api(s.deleteWebdavFileList))
+	r.Post("/reader3/restoreFromWebdav", s.api(s.restoreFromWebdav))
+	r.Post("/reader3/backupToWebdav", s.api(s.backupToWebdav))
+	// WebDAV clients use arbitrary methods (PROPFIND, MKCOL, MOVE, ...); chi's
+	// Handle registers the pattern for every method.
+	r.Handle("/reader3/webdav/*", http.HandlerFunc(s.webdavHandler))
+	r.Handle("/reader3/webdav", http.HandlerFunc(s.webdavHandler))
 
 	// rss
-	mux.HandleFunc("GET /reader3/getRssSources", s.api(s.getRssSources))
-	mux.HandleFunc("POST /reader3/saveRssSource", s.api(s.saveRssSource))
-	mux.HandleFunc("POST /reader3/saveRssSources", s.api(s.saveRssSources))
-	mux.HandleFunc("POST /reader3/deleteRssSource", s.api(s.deleteRssSource))
-	mux.HandleFunc("GET /reader3/getRssArticles", s.api(s.getRssArticles))
-	mux.HandleFunc("POST /reader3/getRssArticles", s.api(s.getRssArticles))
-	mux.HandleFunc("GET /reader3/getRssContent", s.api(s.getRssContent))
-	mux.HandleFunc("POST /reader3/getRssContent", s.api(s.getRssContent))
+	r.Get("/reader3/getRssSources", s.api(s.getRssSources))
+	r.Post("/reader3/saveRssSource", s.api(s.saveRssSource))
+	r.Post("/reader3/saveRssSources", s.api(s.saveRssSources))
+	r.Post("/reader3/deleteRssSource", s.api(s.deleteRssSource))
+	r.Get("/reader3/getRssArticles", s.api(s.getRssArticles))
+	r.Post("/reader3/getRssArticles", s.api(s.getRssArticles))
+	r.Get("/reader3/getRssContent", s.api(s.getRssContent))
+	r.Post("/reader3/getRssContent", s.api(s.getRssContent))
 
 	// replace rule
-	mux.HandleFunc("GET /reader3/getReplaceRules", s.api(s.getReplaceRules))
-	mux.HandleFunc("POST /reader3/saveReplaceRule", s.api(s.saveReplaceRule))
-	mux.HandleFunc("POST /reader3/saveReplaceRules", s.api(s.saveReplaceRules))
-	mux.HandleFunc("POST /reader3/deleteReplaceRule", s.api(s.deleteReplaceRule))
-	mux.HandleFunc("POST /reader3/deleteReplaceRules", s.api(s.deleteReplaceRules))
+	r.Get("/reader3/getReplaceRules", s.api(s.getReplaceRules))
+	r.Post("/reader3/saveReplaceRule", s.api(s.saveReplaceRule))
+	r.Post("/reader3/saveReplaceRules", s.api(s.saveReplaceRules))
+	r.Post("/reader3/deleteReplaceRule", s.api(s.deleteReplaceRule))
+	r.Post("/reader3/deleteReplaceRules", s.api(s.deleteReplaceRules))
 
 	// bookmark
-	mux.HandleFunc("GET /reader3/getBookmarks", s.api(s.getBookmarks))
-	mux.HandleFunc("POST /reader3/saveBookmark", s.api(s.saveBookmark))
-	mux.HandleFunc("POST /reader3/saveBookmarks", s.api(s.saveBookmarks))
-	mux.HandleFunc("POST /reader3/deleteBookmark", s.api(s.deleteBookmark))
-	mux.HandleFunc("POST /reader3/deleteBookmarks", s.api(s.deleteBookmarks))
+	r.Get("/reader3/getBookmarks", s.api(s.getBookmarks))
+	r.Post("/reader3/saveBookmark", s.api(s.saveBookmark))
+	r.Post("/reader3/saveBookmarks", s.api(s.saveBookmarks))
+	r.Post("/reader3/deleteBookmark", s.api(s.deleteBookmark))
+	r.Post("/reader3/deleteBookmarks", s.api(s.deleteBookmarks))
 
 	// assets & epub (epub chapters get JS-injected on first access)
-	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir(filepath.Join(s.Store.Root, "assets")))))
-	mux.Handle("GET /epub/", epubHandler(filepath.Join(s.Store.Root, "data")))
+	r.Handle("/assets/*", http.StripPrefix("/assets/", http.FileServer(http.Dir(filepath.Join(s.Store.Root, "assets")))))
+	r.Handle("/epub/*", epubHandler(filepath.Join(s.Store.Root, "data")))
 
 	// frontend (unchanged Vue build output)
-	mux.Handle("/", s.webHandler())
+	r.NotFound(s.webHandler().ServeHTTP)
 }
 
 func (s *Server) apiSSE(fn handlerFunc) http.HandlerFunc {
@@ -402,7 +406,7 @@ func (s *Server) webHandler() http.Handler {
 		if !strings.HasPrefix(path, filepath.Clean(dir)) {
 			http.NotFound(w, r)
 			return
-			}
+		}
 		if _, err := os.Stat(path); err != nil && !strings.HasPrefix(r.URL.Path, "/api") {
 			// SPA history fallback
 			index := filepath.Join(dir, "index.html")
@@ -445,7 +449,7 @@ func bodyArray(r *http.Request) []any {
 	v := bodyAny(r)
 	if arr, ok := v.([]any); ok {
 		return arr
-			}
+	}
 	return nil
 }
 
@@ -480,7 +484,7 @@ func boolVal(m map[string]any, key string) (bool, bool) {
 		if b, ok := v.(bool); ok {
 			return b, true
 		}
-			}
+	}
 	return false, false
 }
 

@@ -4,40 +4,34 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-
-	"gopkg.in/yaml.v3"
+	"strings"
 )
 
-// Config mirrors reader.app / reader.server from application.yml.
+// Config holds the runtime configuration of the app. Every field can be set
+// through a READER_* environment variable (see README); the zero value is
+// replaced by the defaults in Load.
 type Config struct {
-	StoragePath         string `yaml:"storagePath"`
-	ShowUI              bool   `yaml:"showUI"`
-	Debug               bool   `yaml:"debug"`
-	Packaged            bool   `yaml:"packaged"`
-	Secure              bool   `yaml:"secure"`
-	InviteCode          string `yaml:"inviteCode"`
-	SecureKey           string `yaml:"secureKey"`
-	CacheChapterContent bool   `yaml:"cacheChapterContent"`
-	UserLimit           int    `yaml:"userLimit"`
-	UserBookLimit       int    `yaml:"userBookLimit"`
-	DebugLog            bool   `yaml:"debugLog"`
-	AutoClearInactiveUser int  `yaml:"autoClearInactiveUser"`
-	ExportUseReplace    bool   `yaml:"exportUseReplace"`
-	ExportCharset       string `yaml:"exportCharset"`
-	ExportNoChapterName bool   `yaml:"exportNoChapterName"`
-	ExportPictureFile   bool   `yaml:"exportPictureFile"`
+	StoragePath           string
+	ShowUI                bool
+	Debug                 bool
+	Packaged              bool
+	Secure                bool
+	InviteCode            string
+	SecureKey             string
+	CacheChapterContent   bool
+	UserLimit             int
+	UserBookLimit         int
+	DebugLog              bool
+	AutoClearInactiveUser int
+	ExportUseReplace      bool
+	ExportCharset         string
+	ExportNoChapterName   bool
+	ExportPictureFile     bool
 }
 
 type Server struct {
-	Port   int    `yaml:"port"`
-	WebUrl string `yaml:"webUrl"`
-}
-
-type fileConfig struct {
-	Reader struct {
-		App    Config `yaml:"app"`
-		Server Server `yaml:"server"`
-	} `yaml:"reader"`
+	Port   int
+	WebUrl string
 }
 
 type App struct {
@@ -47,58 +41,47 @@ type App struct {
 	WebDir  string
 }
 
+// Load builds the configuration from environment variables only. This keeps
+// deployment idiomatic for Go services (12-factor style): no config file to
+// ship, and containers/process managers can set everything directly.
 func Load() *App {
 	app := &App{
 		Config: Config{
 			StoragePath:         "storage",
+			CacheChapterContent: true,
 			UserLimit:           50,
 			UserBookLimit:       200,
 			ExportCharset:       "UTF-8",
-			CacheChapterContent: true,
 		},
 		Server: Server{Port: 8080},
 	}
+
+	app.StoragePath = envString("READER_STORAGE_PATH", app.StoragePath)
+	app.ShowUI = envBool("READER_SHOW_UI", app.ShowUI)
+	app.Debug = envBool("READER_DEBUG", app.Debug)
+	app.Packaged = envBool("READER_PACKAGED", app.Packaged)
+	app.Secure = envBool("READER_SECURE", app.Secure)
+	app.InviteCode = envString("READER_INVITE_CODE", app.InviteCode)
+	app.SecureKey = envString("READER_SECURE_KEY", app.SecureKey)
+	app.CacheChapterContent = envBool("READER_CACHE_CHAPTER_CONTENT", app.CacheChapterContent)
+	app.UserLimit = envInt("READER_USER_LIMIT", app.UserLimit)
+	app.UserBookLimit = envInt("READER_USER_BOOK_LIMIT", app.UserBookLimit)
+	app.DebugLog = envBool("READER_DEBUG_LOG", app.DebugLog)
+	app.AutoClearInactiveUser = envInt("READER_AUTO_CLEAR_INACTIVE_USER", app.AutoClearInactiveUser)
+	app.ExportUseReplace = envBool("READER_EXPORT_USE_REPLACE", app.ExportUseReplace)
+	app.ExportCharset = envString("READER_EXPORT_CHARSET", app.ExportCharset)
+	app.ExportNoChapterName = envBool("READER_EXPORT_NO_CHAPTER_NAME", app.ExportNoChapterName)
+	app.ExportPictureFile = envBool("READER_EXPORT_PICTURE_FILE", app.ExportPictureFile)
+
+	app.Port = envInt("READER_PORT", app.Port)
+	app.WebUrl = envString("READER_WEB_URL", app.WebUrl)
 
 	workDir, _ := os.Getwd()
 	app.WorkDir = workDir
 	app.WebDir = filepath.Join(workDir, "web")
 
-	// Match Spring Boot's config file names.
-	for _, name := range []string{"application.yml", "application.yaml", filepath.Join("server", "conf", "application.properties")} {
-		path := filepath.Join(workDir, name)
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
-		if filepath.Ext(path) == ".yml" || filepath.Ext(path) == ".yaml" {
-			var fc fileConfig
-			if b, err := os.ReadFile(path); err == nil {
-				if err := yaml.Unmarshal(b, &fc); err == nil {
-					app.Config = fc.Reader.App
-					app.Server = fc.Reader.Server
-				}
-			}
-		}
-	}
-	// Environment overrides (useful in containers).
-	if v := os.Getenv("READER_STORAGE_PATH"); v != "" {
-		app.StoragePath = v
-	}
-	if v := os.Getenv("READER_SECURE"); v != "" {
-		app.Secure = v == "true" || v == "1"
-	}
-	if v := os.Getenv("READER_SECURE_KEY"); v != "" {
-		app.SecureKey = v
-	}
-	if v := os.Getenv("READER_INVITE_CODE"); v != "" {
-		app.InviteCode = v
-	}
-	if v := os.Getenv("READER_PORT"); v != "" {
-		if p, err := strconv.Atoi(v); err == nil {
-			app.Port = p
-		}
-	}
-	if app.Server.Port == 0 {
-		app.Server.Port = 8080
+	if app.Port <= 0 {
+		app.Port = 8080
 	}
 	if app.UserLimit <= 0 {
 		app.UserLimit = 50
@@ -120,4 +103,38 @@ func (a *App) StorageRoot() string {
 		return a.StoragePath
 	}
 	return filepath.Join(a.WorkDir, a.StoragePath)
+}
+
+func envString(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		return v
+	}
+	return def
+}
+
+func envBool(key string, def bool) bool {
+	v, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return def
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return def
+	}
+}
+
+func envInt(key string, def int) int {
+	v, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return def
+	}
+	return n
 }

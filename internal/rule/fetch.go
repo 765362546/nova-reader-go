@@ -25,32 +25,55 @@ const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 
 // Response is a decoded HTTP response.
 type Response struct {
-	Body    string
-	Bytes   []byte
-	URL     string
-	Status  int
-	Header  http.Header
+	Body   string
+	Bytes  []byte
+	URL    string
+	Status int
+	Header http.Header
 }
 
 // Fetcher performs AnalyzeUrl-style requests (URL + JSON options + charset).
 type Fetcher struct {
-	Client   *http.Client
-	Source   *model.BookSource
-	RuleData *Analyze
-	Header   map[string]string
+	Client    *http.Client
+	Source    *model.BookSource
+	RuleData  *Analyze
+	Header    map[string]string
 	UserAgent string
-	mu       sync.Mutex
-	last     time.Time
-	minGap   time.Duration
+	mu        sync.Mutex
+	last      time.Time
+	minGap    time.Duration
+}
+
+// Fetchers for the same book source share one http.Client (and cookie jar) so
+// connections are pooled and login cookies persist across searches/chapters.
+var (
+	clientsMu sync.Mutex
+	clients   = map[string]*http.Client{}
+)
+
+func sharedClient(key string) *http.Client {
+	if key == "" {
+		jar, _ := cookiejar.New(nil)
+		return &http.Client{Jar: jar, Timeout: 40 * time.Second}
+	}
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	if c := clients[key]; c != nil {
+		return c
+	}
+	jar, _ := cookiejar.New(nil)
+	c := &http.Client{Jar: jar, Timeout: 40 * time.Second}
+	clients[key] = c
+	return c
 }
 
 func NewFetcher(source *model.BookSource, ruleData *Analyze) *Fetcher {
-	jar, _ := cookiejar.New(nil)
+	clientKey := ""
+	if source != nil {
+		clientKey = source.BookSourceUrl
+	}
 	f := &Fetcher{
-		Client: &http.Client{
-			Jar:     jar,
-			Timeout: 40 * time.Second,
-		},
+		Client:    sharedClient(clientKey),
 		Source:    source,
 		RuleData:  ruleData,
 		Header:    map[string]string{},

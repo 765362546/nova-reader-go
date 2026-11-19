@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/765362546/novel-reader-go/internal/localbook"
@@ -126,10 +127,44 @@ func (s *Server) saveShelfBookLatestChapter(ns string, book *model.Book, chapter
 
 // ---------------------------------------------------------------- book sources
 
-func (s *Server) sourceStrings(ns, group string) []string {
+// bookSourceIndex caches the parsed position of every book source url so
+// lookups by url do not re-scan and re-unmarshal the whole source list.
+type bookSourceIndex struct {
+	raws  []json.RawMessage
+	byURL map[string]int
+}
+
+func (s *Server) sourceIndex(ns string) *bookSourceIndex {
+	s.sourceMu.RLock()
+	idx := s.sourceIndexes[ns]
+	s.sourceMu.RUnlock()
+	if idx != nil {
+		return idx
+	}
 	raws := s.loadBookSources(ns)
-	out := make([]string, 0, len(raws))
-	for _, raw := range raws {
+	idx = &bookSourceIndex{raws: raws, byURL: make(map[string]int, len(raws))}
+	for i, raw := range raws {
+		var bs model.BookSource
+		if unmarshalRaw(raw, &bs) && bs.BookSourceUrl != "" {
+			idx.byURL[bs.BookSourceUrl] = i
+		}
+	}
+	s.sourceMu.Lock()
+	s.sourceIndexes[ns] = idx
+	s.sourceMu.Unlock()
+	return idx
+}
+
+func (s *Server) invalidateSourceIndex(ns string) {
+	s.sourceMu.Lock()
+	delete(s.sourceIndexes, ns)
+	s.sourceMu.Unlock()
+}
+
+func (s *Server) sourceStrings(ns, group string) []string {
+	idx := s.sourceIndex(ns)
+	out := make([]string, 0, len(idx.raws))
+	for _, raw := range idx.raws {
 		if group != "" {
 			var bs model.BookSource
 			if !unmarshalRaw(raw, &bs) || dstr(bs.BookSourceGroup) != group {
@@ -145,13 +180,12 @@ func (s *Server) sourceByURL(ns, url string) (string, int) {
 	if url == "" {
 		return "", -1
 	}
-	for i, raw := range s.loadBookSources(ns) {
-		var bs model.BookSource
-		if unmarshalRaw(raw, &bs) && bs.BookSourceUrl == url {
-			return string(raw), i
-		}
+	idx := s.sourceIndex(ns)
+	i, ok := idx.byURL[url]
+	if !ok {
+		return "", -1
 	}
-	return "", -1
+	return string(idx.raws[i]), i
 }
 
 func (s *Server) bookSourceByURL(ns, url string) *model.BookSource {
@@ -517,17 +551,6 @@ func (s *Server) invalidList(ns string) []map[string]any {
 	return out
 }
 
-func (s *Server) isInvalidSource(ns, url string) bool {
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-	if m, ok := s.invalidCache[ns]; ok {
-		if v, ok := m[url]; ok && time.Now().UnixMilli()-v.Time < 600*1000 {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *Server) addInvalidSource(ns, url string, err error) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
@@ -543,20 +566,80 @@ func (s *Server) addInvalidSource(ns, url string, err error) {
 
 // ---------------------------------------------------------------- search
 
+const (
+	sourceFailureThreshold = 3
+	sourceCooldown         = 10 * time.Minute
+)
+
+type sourceBreaker struct {
+	failures int
+	until    time.Time
+}
+
+// sourceBlocked reports whether a source is in its cooldown window after
+// repeated failures, so multi-source searches can skip it quickly.
+func (s *Server) sourceBlocked(ns, url string) bool {
+	if url == "" {
+		return false
+	}
+	key := ns + "\x00" + url
+	s.breakerMu.Lock()
+	defer s.breakerMu.Unlock()
+	b := s.breakers[key]
+	if b == nil || b.until.IsZero() {
+		return false
+	}
+	if time.Now().Before(b.until) {
+		return true
+	}
+	delete(s.breakers, key)
+	return false
+}
+
+func (s *Server) sourceFailed(ns, url string) {
+	if url == "" {
+		return
+	}
+	key := ns + "\x00" + url
+	s.breakerMu.Lock()
+	defer s.breakerMu.Unlock()
+	b := s.breakers[key]
+	if b == nil {
+		b = &sourceBreaker{}
+		s.breakers[key] = b
+	}
+	b.failures++
+	if b.failures >= sourceFailureThreshold {
+		b.until = time.Now().Add(sourceCooldown)
+	}
+}
+
+func (s *Server) sourceSucceeded(ns, url string) {
+	if url == "" {
+		return
+	}
+	key := ns + "\x00" + url
+	s.breakerMu.Lock()
+	delete(s.breakers, key)
+	s.breakerMu.Unlock()
+}
+
 func (s *Server) searchBookWithSource(ns, sourceStr string, book *model.Book, accurate bool) []*model.SearchBook {
 	var bs model.BookSource
 	if json.Unmarshal([]byte(sourceStr), &bs) != nil {
 		return nil
 	}
-	if s.isInvalidSource(ns, bs.BookSourceUrl) {
+	if s.sourceBlocked(ns, bs.BookSourceUrl) {
 		return nil
 	}
 	start := time.Now()
 	result, err := webbook.New(&bs).Search(book.Name, 1)
 	if err != nil {
+		s.sourceFailed(ns, bs.BookSourceUrl)
 		s.addInvalidSource(ns, bs.BookSourceUrl, err)
 		return nil
 	}
+	s.sourceSucceeded(ns, bs.BookSourceUrl)
 	cost := time.Since(start).Milliseconds()
 	out := make([]*model.SearchBook, 0, len(result))
 	for _, sb := range result {
@@ -645,6 +728,28 @@ func (s *Server) chapterContent(ns string, book *model.Book, chapter *model.Book
 	return "", nil
 }
 
+var (
+	replaceRegexMu    sync.RWMutex
+	replaceRegexCache = map[string]*regexp.Regexp{}
+)
+
+func cachedRegexp(pattern string) (*regexp.Regexp, error) {
+	replaceRegexMu.RLock()
+	re := replaceRegexCache[pattern]
+	replaceRegexMu.RUnlock()
+	if re != nil {
+		return re, nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	replaceRegexMu.Lock()
+	replaceRegexCache[pattern] = re
+	replaceRegexMu.Unlock()
+	return re, nil
+}
+
 func (s *Server) applyReplaceRules(ns, content string) string {
 	raw, err := s.Store.Get("data", ns, "replaceRule")
 	if err != nil {
@@ -660,7 +765,7 @@ func (s *Server) applyReplaceRules(ns, content string) string {
 			continue
 		}
 		if r.IsRegex {
-			re, err := regexp.Compile(r.Pattern)
+			re, err := cachedRegexp(r.Pattern)
 			if err != nil {
 				continue
 			}

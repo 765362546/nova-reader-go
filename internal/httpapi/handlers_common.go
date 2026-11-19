@@ -2,8 +2,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 
 	"github.com/765362546/novel-reader-go/internal/model"
 )
@@ -24,7 +22,11 @@ func (s *Server) saveArray(ns, name string, arr []json.RawMessage) error {
 	if arr == nil {
 		arr = []json.RawMessage{}
 	}
-	return s.Store.Save(arr, "data", ns, name)
+	err := s.Store.Save(arr, "data", ns, name)
+	if name == "bookSource" {
+		s.invalidateSourceIndex(ns)
+	}
+	return err
 }
 
 func (s *Server) loadBookSources(ns string) []json.RawMessage {
@@ -79,13 +81,9 @@ func replaceAt(list []json.RawMessage, i int, raw json.RawMessage) []json.RawMes
 	return out
 }
 
-func (s *Server) userBookSourcePath(ns string) string {
-	return s.Store.FilePath("data", ns, "bookSource")
-}
-
 func (s *Server) deleteUserBookSourceFile(ns string) {
-	_ = os.Remove(s.userBookSourcePath(ns))
-	_ = os.RemoveAll(filepath.Join(s.Store.Root, "data", ns, "bookSource.json"))
+	_ = s.Store.Delete("data", ns, "bookSource")
+	s.invalidateSourceIndex(ns)
 }
 
 func isSvgOrImage(b []byte) bool {

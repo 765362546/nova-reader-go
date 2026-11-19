@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/765362546/novel-reader-go/internal/model"
@@ -46,17 +47,30 @@ func (s *Server) shelfUpdateJob() {
 	}
 }
 
+const (
+	refreshWorkers     = 8
+	refreshBookTimeout = 90 * time.Second
+)
+
+type refreshOutcome struct {
+	index  int
+	total  int
+	latest string
+	ok     bool
+}
+
 func (s *Server) refreshNamespace(ns string) {
 	books := s.loadBooks(ns)
 	if len(books) == 0 {
 		return
 	}
+	sem := make(chan struct{}, refreshWorkers)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
 	updated := false
-	for _, book := range books {
-		if book.Origin == model.BookTypeLocal {
-			continue
-		}
-		if !book.CanUpdate {
+
+	for i, book := range books {
+		if book.Origin == model.BookTypeLocal || !book.CanUpdate {
 			continue
 		}
 		srcStr := s.sourceStringFromRequest(nil, ns, book.Origin)
@@ -67,25 +81,58 @@ func (s *Server) refreshNamespace(ns string) {
 		if json.Unmarshal([]byte(srcStr), &bs) != nil {
 			continue
 		}
-		ch, err := s.chapterList(ns, book, srcStr, true)
-		if err != nil || len(ch) == 0 {
-			logger.Warn("shelf update: refresh chapters failed",
-				"namespace", ns, "book", book.Name, "error", err)
-			continue
-		}
-		book.TotalChapterNum = len(ch)
-		if last := ch[len(ch)-1]; last != nil && last.Title != "" {
-			t := last.Title
-			book.LatestChapterTitle = &t
-		}
-		book.LastCheckTime = time.Now().UnixMilli()
-		updated = true
+		wg.Add(1)
+		go func(index int, snapshot model.Book, srcStr string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			done := make(chan refreshOutcome, 1)
+			go func() {
+				done <- s.refreshBookChapters(ns, &snapshot, srcStr, index)
+			}()
+			select {
+			case out := <-done:
+				if !out.ok {
+					return
+				}
+				books[index].TotalChapterNum = out.total
+				if out.latest != "" {
+					title := out.latest
+					books[index].LatestChapterTitle = &title
+				}
+				books[index].LastCheckTime = time.Now().UnixMilli()
+				mu.Lock()
+				updated = true
+				mu.Unlock()
+			case <-time.After(refreshBookTimeout):
+				logger.Warn("shelf update: refresh timed out",
+					"namespace", ns, "book", snapshot.Name)
+			}
+		}(i, *book, srcStr)
 	}
+	wg.Wait()
 	if updated {
 		if err := s.saveBooks(ns, books); err != nil {
 			logger.Error("shelf update: save books failed", "namespace", ns, "error", err)
 		}
 	}
+}
+
+// refreshBookChapters fetches a fresh chapter list for one book. It operates on
+// a snapshot so a timed-out refresh can never race with the final shelf save.
+func (s *Server) refreshBookChapters(ns string, book *model.Book, srcStr string, index int) refreshOutcome {
+	ch, err := s.chapterList(ns, book, srcStr, true)
+	if err != nil || len(ch) == 0 {
+		logger.Warn("shelf update: refresh chapters failed",
+			"namespace", ns, "book", book.Name, "error", err)
+		return refreshOutcome{index: index}
+	}
+	out := refreshOutcome{index: index, total: len(ch), ok: true}
+	if last := ch[len(ch)-1]; last != nil && last.Title != "" {
+		out.latest = last.Title
+	}
+	return out
 }
 
 // loadUsernames returns every user namespace when secure=true.

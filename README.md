@@ -21,7 +21,7 @@
 
 | 组件 | 用途 |
 | --- | --- |
-| `net/http` (Go 1.22+ 路由) | HTTP 服务 |
+| `go-chi/chi` | HTTP 路由 |
 | `goquery` / `cascadia` | CSS 选择器解析 |
 | `antchfx/htmlquery` | XPath 解析 |
 | `ohler55/ojg` | JSONPath 解析 |
@@ -35,7 +35,7 @@
 .
 ├── cmd/server/            # 程序入口
 ├── internal/
-│   ├── config/            # 配置加载（application.yml + 环境变量）
+│   ├── config/            # 配置加载（READER_* 环境变量）
 │   ├── store/             # JSON 文件存储
 │   ├── model/             # 数据模型（书籍、书源、RSS 等）
 │   ├── rule/              # 规则引擎（HTML / XPath / JSONPath / JS / HTTP 抓取）
@@ -91,37 +91,37 @@ go run ./cmd/server
 
 ## 配置
 
-程序会按顺序查找工作目录下的 `application.yml`、`application.yaml`、
-`server/conf/application.properties`，结构与原项目一致：
+配置全部通过环境变量提供（12-factor 风格），代码内置默认值，无需配置文件。
+未设置的变量使用默认值：
 
-```yaml
-reader:
-  app:
-    storagePath: storage      # 数据目录
-    secure: false             # 是否多用户模式
-    secureKey: ""             # 管理密码
-    inviteCode: ""            # 邀请码
-    userLimit: 50
-    userBookLimit: 200
-    cacheChapterContent: true
-  server:
-    port: 8080
-```
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `READER_PORT` | `8080` | 监听端口 |
+| `READER_STORAGE_PATH` | `storage` | 数据目录 |
+| `READER_SECURE` | `false` | 是否启用多用户 |
+| `READER_SECURE_KEY` | 空 | 管理密码 |
+| `READER_INVITE_CODE` | 空 | 邀请码 |
+| `READER_USER_LIMIT` | `50` | 用户数量上限 |
+| `READER_USER_BOOK_LIMIT` | `200` | 单用户书架上限 |
+| `READER_CACHE_CHAPTER_CONTENT` | `true` | 是否缓存章节正文 |
+| `READER_DEBUG` | `false` | 调试模式 |
+| `READER_DEBUG_LOG` | `false` | 输出调试日志 |
+| `READER_SHOW_UI` | `false` | 是否展示内置前端 |
+| `READER_PACKAGED` | `false` | 打包运行模式 |
+| `READER_AUTO_CLEAR_INACTIVE_USER` | `0` | 自动清理未登录用户的天数（0 关闭） |
+| `READER_EXPORT_USE_REPLACE` | `false` | 导出时应用替换规则 |
+| `READER_EXPORT_CHARSET` | `UTF-8` | 导出编码 |
+| `READER_EXPORT_NO_CHAPTER_NAME` | `false` | 导出时不写章节名 |
+| `READER_EXPORT_PICTURE_FILE` | `false` | 导出图片文件 |
+| `READER_WEB_URL` | 空 | 对外访问地址 |
 
-也可使用环境变量覆盖：
-
-| 环境变量 | 说明 |
-| --- | --- |
-| `READER_PORT` | 监听端口 |
-| `READER_STORAGE_PATH` | 数据目录 |
-| `READER_SECURE` | 是否启用多用户（`true` / `1`） |
-| `READER_SECURE_KEY` | 管理密码 |
-| `READER_INVITE_CODE` | 邀请码 |
+布尔值支持 `true/false`、`1/0`、`yes/no`、`on/off`。
 
 示例：
 
 ```bash
-READER_PORT=18080 READER_STORAGE_PATH=/data/reader ./novel-server
+READER_PORT=18080 READER_STORAGE_PATH=/data/reader READER_SECURE=true \
+READER_SECURE_KEY=secret ./novel-server
 ```
 
 ## 数据目录
