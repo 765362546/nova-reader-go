@@ -51,7 +51,10 @@
 ### 1. 环境要求
 
 - Go **1.26+**
-- Node.js（仅用于构建前端）
+- Node.js **14 ~ 16**（推荐 16 LTS）及配套 npm，仅用于构建前端
+
+> 前端基于 Vue CLI 4（webpack 4）。Node.js 17 及以上版本构建时需设置
+> `NODE_OPTIONS=--openssl-legacy-provider`，否则会因 OpenSSL 3 报错。
 
 ### 2. 构建前端
 
@@ -59,6 +62,14 @@
 cd web
 npm install
 npm run build
+```
+
+Node.js 17+ 请改用：
+
+```bash
+cd web
+npm install
+NODE_OPTIONS=--openssl-legacy-provider npm run build
 ```
 
 构建产物位于 `web/dist`，后端会自动识别并作为静态资源目录。
