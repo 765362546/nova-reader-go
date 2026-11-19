@@ -31,6 +31,8 @@ if [ "${SKIP_FRONTEND:-0}" != "1" ]; then
     echo "错误: 前端构建失败，未生成 web/dist/index.html" >&2
     exit 1
   fi
+  # 构建会清空 dist；保留占位文件，保证未构建前端时 go:embed 仍可编译。
+  touch web/dist/.gitkeep
 else
   echo "==> 跳过前端构建 (SKIP_FRONTEND=1)"
   if [ ! -f web/dist/index.html ]; then
