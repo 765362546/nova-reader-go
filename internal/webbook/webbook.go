@@ -390,11 +390,37 @@ func (w *WebBook) analyzeBookInfo(book *model.Book, body string, a *rule.Analyze
 
 // ChapterList fetches the table of contents.
 func (w *WebBook) ChapterList(book *model.Book) ([]*model.BookChapter, error) {
-	book.Type = w.Source.BookSourceType
-	tocURL := book.TocUrl
+	tocURL := strings.TrimSpace(book.TocUrl)
 	if tocURL == "" {
 		tocURL = book.BookUrl
 	}
+	chapters, err := w.chapterListAt(book, tocURL)
+	if err == nil && len(chapters) > 0 {
+		return chapters, nil
+	}
+	// The toc url may point at a book detail page (or be missing entirely when
+	// the reader is opened straight from search results). Re-fetch book info so
+	// its toc rule can reveal the real catalogue url, then retry once.
+	if w.infoRule().TocUrl == nil {
+		return chapters, err
+	}
+	if _, infoErr := w.BookInfo(book, false); infoErr != nil {
+		return chapters, err
+	}
+	fixed := strings.TrimSpace(book.TocUrl)
+	if fixed == "" || fixed == tocURL {
+		return chapters, err
+	}
+	logger.Debug("chapter list retry with toc url from book info",
+		"source", w.sourceName(), "book", book.Name, "tocUrl", fixed)
+	if retried, retryErr := w.chapterListAt(book, fixed); retryErr == nil && len(retried) > 0 {
+		return retried, nil
+	}
+	return chapters, err
+}
+
+func (w *WebBook) chapterListAt(book *model.Book, tocURL string) ([]*model.BookChapter, error) {
+	book.Type = w.Source.BookSourceType
 	a := newAnalyze(w.Source, book, nil)
 	f := w.fetcher(a)
 	a.SetContent("", book.BookUrl)

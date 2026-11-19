@@ -111,15 +111,22 @@ type urlOption struct {
 func parseURLOptions(raw string) (string, urlOption) {
 	opt := urlOption{}
 	trimmed := strings.TrimSpace(raw)
-	idx := strings.LastIndex(trimmed, ",{")
-	if idx < 0 || !strings.HasSuffix(trimmed, "}") {
+	idx := urlOptionsIndex(trimmed)
+	if idx < 0 {
 		return raw, opt
 	}
 	urlPart := strings.TrimSpace(trimmed[:idx])
 	jsonPart := strings.TrimSpace(trimmed[idx+1:])
+	if jsonPart == "" || !strings.HasSuffix(jsonPart, "}") {
+		return raw, opt
+	}
 	var m map[string]any
 	if err := json.Unmarshal([]byte(jsonPart), &m); err != nil {
-		return raw, opt
+		// Book sources commonly write JS-style object literals with single
+		// quotes and unquoted keys; Legado parses them with lenient GSON.
+		if err := json.Unmarshal([]byte(normalizeLooseJSON(jsonPart)), &m); err != nil {
+			return raw, opt
+		}
 	}
 	for k, v := range m {
 		switch strings.ToLower(k) {
@@ -148,6 +155,129 @@ func parseURLOptions(raw string) (string, urlOption) {
 		}
 	}
 	return urlPart, opt
+}
+
+// urlOptionsIndex returns the index of the comma starting a trailing ,{...}
+// option block, mirroring Legado's `\s*,\s*(?=\{)` pattern.
+func urlOptionsIndex(s string) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] != ',' {
+			continue
+		}
+		j := i + 1
+		for j < len(s) && isJSONSpace(s[j]) {
+			j++
+		}
+		if j < len(s) && s[j] == '{' {
+			return i
+		}
+	}
+	return -1
+}
+
+func isJSONSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+func isIdentChar(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+		c == '_' || c == '$' || c == '-'
+}
+
+// normalizeLooseJSON rewrites a JS-style object literal into valid JSON:
+// single-quoted strings become double-quoted and bare keys are quoted.
+func normalizeLooseJSON(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 16)
+	for i := 0; i < len(s); {
+		c := s[i]
+		switch {
+		case c == '\'' || c == '"':
+			i = writeJSONString(&b, s, i)
+		case c == '{' || c == ',':
+			b.WriteByte(c)
+			i++
+			j := i
+			for j < len(s) && isJSONSpace(s[j]) {
+				j++
+			}
+			start := j
+			for j < len(s) && isIdentChar(s[j]) {
+				j++
+			}
+			k := j
+			for k < len(s) && isJSONSpace(s[k]) {
+				k++
+			}
+			if start < j && k < len(s) && s[k] == ':' {
+				b.WriteString(`"`)
+				b.WriteString(s[start:j])
+				b.WriteString(`"`)
+				i = j
+			}
+		case c == '}' || c == ']':
+			trimTrailingComma(&b)
+			b.WriteByte(c)
+			i++
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return b.String()
+}
+
+// writeJSONString copies the quoted string starting at s[i] into b, converting
+// it to a double-quoted JSON string, and returns the next index.
+func writeJSONString(b *strings.Builder, s string, i int) int {
+	quote := s[i]
+	b.WriteByte('"')
+	i++
+	for i < len(s) {
+		c := s[i]
+		if c == '\\' && i+1 < len(s) {
+			n := s[i+1]
+			switch {
+			case quote == '\'' && n == '\'':
+				b.WriteByte('\'')
+			case n == '"':
+				b.WriteString(`\"`)
+			case quote == '"' && n == '\'':
+				b.WriteByte('\'')
+			default:
+				b.WriteByte('\\')
+				b.WriteByte(n)
+			}
+			i += 2
+			continue
+		}
+		if c == quote {
+			i++
+			break
+		}
+		if quote == '\'' && c == '"' {
+			b.WriteString(`\"`)
+		} else {
+			b.WriteByte(c)
+		}
+		i++
+	}
+	b.WriteByte('"')
+	return i
+}
+
+func trimTrailingComma(b *strings.Builder) {
+	out := b.String()
+	end := len(out)
+	for end > 0 && isJSONSpace(out[end-1]) {
+		end--
+	}
+	if end == 0 || out[end-1] != ',' {
+		return
+	}
+	b.Reset()
+	b.WriteString(out[:end-1])
+	b.WriteString(out[end:])
 }
 
 func toStringMap(v any) map[string]string {

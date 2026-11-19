@@ -103,6 +103,12 @@ func Load() *App {
 	if app.UserLimit <= 0 {
 		app.UserLimit = 50
 	}
+	if app.UserBookLimit <= 0 {
+		app.UserBookLimit = 200
+	}
+	if app.ExportCharset == "" {
+		app.ExportCharset = "UTF-8"
+	}
 	if app.StoragePath == "" {
 		app.StoragePath = "storage"
 	}
