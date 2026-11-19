@@ -56,7 +56,25 @@
 > 前端基于 Vue CLI 4（webpack 4）。Node.js 17 及以上版本构建时需设置
 > `NODE_OPTIONS=--openssl-legacy-provider`，否则会因 OpenSSL 3 报错。
 
-### 2. 构建前端
+### 2. 一键构建（推荐）
+
+```bash
+./build.sh
+./novel-server
+```
+
+脚本会依次执行 `npm ci`、`npm run build` 和 `go build`，确保前端产物被内嵌，
+不会漏编译。只想重新编译后端（复用已有 `web/dist`）时：
+
+```bash
+SKIP_FRONTEND=1 ./build.sh
+```
+
+默认监听 `:8080`，浏览器访问 `http://localhost:8080/`。
+
+### 3. 分步构建
+
+手动构建前端：
 
 ```bash
 cd web
@@ -76,16 +94,14 @@ NODE_OPTIONS=--openssl-legacy-provider npm run build
 因此最终产物是单文件，部署时无需再携带 `web/`。若目录尚未构建，程序会退回到
 从磁盘读取 `web/dist`（开发时优先使用磁盘文件，便于热更新）。
 
-### 3. 编译并运行
+再编译并运行后端：
 
 ```bash
 go build -o novel-server ./cmd/server
 ./novel-server
 ```
 
-默认监听 `:8080`，浏览器访问 `http://localhost:8080/`。
-
-开发调试也可直接运行：
+开发调试也可直接运行（不会内嵌前端，仍从磁盘读取）：
 
 ```bash
 go run ./cmd/server
