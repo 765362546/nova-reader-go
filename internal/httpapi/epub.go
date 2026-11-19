@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -172,7 +171,7 @@ func injectJavascriptToEpubChapter(filePath string) {
 		}
 	}
 	if err := os.WriteFile(filePath, []byte(newContent), 0o644); err != nil {
-		log.Printf("epub inject: write %s failed: %v", filePath, err)
+		logger.Error("epub inject: write failed", "file", filePath, "error", err)
 	}
 }
 

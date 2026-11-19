@@ -2,9 +2,9 @@ package httpapi
 
 import (
 	"encoding/json"
-	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 
 	"github.com/765362546/novel-reader-go/internal/model"
@@ -30,17 +30,18 @@ func (s *Server) shelfUpdateJob() {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("shelfUpdateJob panic: %v", r)
+					logger.Error("shelfUpdateJob panic", "panic", r, "stack", string(debug.Stack()))
 				}
 			}()
-			log.Println("[scheduler] shelfUpdateJob: start")
+			logger.Info("shelf update job started")
+			start := time.Now()
 			s.refreshNamespace("default")
 			if s.App.Secure {
 				for _, u := range s.loadUsernames() {
 					s.refreshNamespace(u)
 				}
 			}
-			log.Println("[scheduler] shelfUpdateJob: done")
+			logger.Info("shelf update job finished", "duration_ms", time.Since(start).Milliseconds())
 		}()
 	}
 }
@@ -68,6 +69,8 @@ func (s *Server) refreshNamespace(ns string) {
 		}
 		ch, err := s.chapterList(ns, book, srcStr, true)
 		if err != nil || len(ch) == 0 {
+			logger.Warn("shelf update: refresh chapters failed",
+				"namespace", ns, "book", book.Name, "error", err)
 			continue
 		}
 		book.TotalChapterNum = len(ch)
@@ -80,7 +83,7 @@ func (s *Server) refreshNamespace(ns string) {
 	}
 	if updated {
 		if err := s.saveBooks(ns, books); err != nil {
-			log.Printf("[scheduler] shelfUpdateJob save ns=%s failed: %v", ns, err)
+			logger.Error("shelf update: save books failed", "namespace", ns, "error", err)
 		}
 	}
 }
@@ -125,7 +128,7 @@ func (s *Server) clearUserJob() {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("clearUserJob panic: %v", r)
+					logger.Error("clearUserJob panic", "panic", r, "stack", string(debug.Stack()))
 				}
 			}()
 			s.clearInactiveUsersOnce()
@@ -161,7 +164,10 @@ func (s *Server) clearInactiveUsersOnce() {
 			lastLogin, _ = v.Int64()
 		}
 		if lastLogin > 0 && lastLogin < expireCutoff {
-			log.Printf("[scheduler] clearUserJob: deleting inactive user %s (last_login_at=%d)", username, lastLogin)
+			logger.Info("clear user job: removing inactive user",
+				"username", username,
+				"lastLoginAt", lastLogin,
+			)
 			userHome := filepath.Join(homeRoot, username)
 			if st, err := os.Stat(userHome); err == nil && st.IsDir() {
 				_ = os.RemoveAll(userHome)
@@ -170,6 +176,6 @@ func (s *Server) clearInactiveUsersOnce() {
 		}
 	}
 	if err := s.Store.SavePretty(users, "data", "users"); err != nil {
-		log.Printf("[scheduler] clearUserJob save users failed: %v", err)
+		logger.Error("clear user job: save users failed", "error", err)
 	}
 }

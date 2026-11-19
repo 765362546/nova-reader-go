@@ -563,8 +563,10 @@ func (s *Server) restoreFromWebdav(w http.ResponseWriter, r *http.Request, ri *r
 		return failure("路径不存在")
 	}
 	if !s.syncFromWebdav(ri.Namespace, file) {
+		logger.Error("restore from webdav failed", "namespace", ri.Namespace, "path", p)
 		return failure("恢复失败")
 	}
+	logger.Info("restored from webdav", "namespace", ri.Namespace, "path", p)
 	return success("")
 }
 
@@ -577,7 +579,9 @@ func (s *Server) backupToWebdav(w http.ResponseWriter, r *http.Request, ri *reqI
 		return failure("请先使用阅读App备份到webdav")
 	}
 	if !s.saveToWebdav(ri.Namespace, zipPath) {
+		logger.Error("backup to webdav failed", "namespace", ri.Namespace, "zip", zipPath)
 		return failure("备份失败")
 	}
+	logger.Info("backed up to webdav", "namespace", ri.Namespace, "zip", zipPath)
 	return success("")
 }

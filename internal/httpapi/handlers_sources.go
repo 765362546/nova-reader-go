@@ -30,7 +30,10 @@ func (s *Server) saveBookSource(w http.ResponseWriter, r *http.Request, ri *reqI
 	} else {
 		list = append(list, raw)
 	}
-	_ = s.saveArray(ns, "bookSource", list)
+	if err := s.saveArray(ns, "bookSource", list); err != nil {
+		logger.Error("save book source failed", "namespace", ns, "source", src.BookSourceName, "error", err)
+	}
+	logger.Debug("book source saved", "namespace", ns, "source", src.BookSourceName, "url", src.BookSourceUrl)
 	return success("")
 }
 
@@ -59,7 +62,10 @@ func (s *Server) saveBookSources(w http.ResponseWriter, r *http.Request, ri *req
 			list = append(list, raw)
 		}
 	}
-	_ = s.saveArray(ns, "bookSource", list)
+	if err := s.saveArray(ns, "bookSource", list); err != nil {
+		logger.Error("save book sources failed", "namespace", ns, "count", len(raws), "error", err)
+	}
+	logger.Info("book sources imported", "namespace", ns, "received", len(raws), "total", len(list))
 	return success("")
 }
 

@@ -7,10 +7,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/765362546/novel-reader-go/internal/logging"
 	"github.com/765362546/novel-reader-go/internal/model"
 	"github.com/765362546/novel-reader-go/internal/rule"
 	"github.com/765362546/novel-reader-go/internal/util"
 )
+
+var logger = logging.Component("webbook")
 
 // WebBook ports io.legado.app.model.webBook.WebBook.
 type WebBook struct {
@@ -19,6 +22,17 @@ type WebBook struct {
 
 func New(source *model.BookSource) *WebBook {
 	return &WebBook{Source: source}
+}
+
+// sourceName identifies the book source in log records.
+func (w *WebBook) sourceName() string {
+	if w.Source == nil {
+		return ""
+	}
+	if w.Source.BookSourceName != "" {
+		return w.Source.BookSourceName
+	}
+	return w.Source.BookSourceUrl
 }
 
 func (w *WebBook) searchRule() *model.SearchRule {
@@ -145,10 +159,24 @@ func (w *WebBook) Search(key string, page int) ([]*model.SearchBook, error) {
 	// URL template may need JS evaluation; AnalyzeURL does that via evalInline.
 	resp, err := f.Get(*w.Source.SearchUrl)
 	if err != nil {
+		logger.Warn("search request failed", "source", w.sourceName(), "key", key, "page", page, "error", err)
 		return nil, err
 	}
 	body := w.loginCheck(a, resp.Body)
-	return w.analyzeBookList(body, a, resp.URL, variable, true, resp.URL)
+	start := time.Now()
+	list, err := w.analyzeBookList(body, a, resp.URL, variable, true, resp.URL)
+	if err != nil {
+		logger.Warn("search parse failed", "source", w.sourceName(), "key", key, "page", page, "error", err)
+		return nil, err
+	}
+	logger.Debug("search completed",
+		"source", w.sourceName(),
+		"key", key,
+		"page", page,
+		"count", len(list),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+	return list, nil
 }
 
 // ExploreBook performs discovery.
@@ -160,6 +188,7 @@ func (w *WebBook) Explore(urlStr string, page int) ([]*model.SearchBook, error) 
 	a.SetContent("", w.Source.BookSourceUrl)
 	resp, err := f.Get(urlStr)
 	if err != nil {
+		logger.Warn("explore request failed", "source", w.sourceName(), "url", urlStr, "page", page, "error", err)
 		return nil, err
 	}
 	body := w.loginCheck(a, resp.Body)
@@ -309,11 +338,15 @@ func (w *WebBook) BookInfo(book *model.Book, canReName bool) (*model.Book, error
 	a.SetContent("", w.Source.BookSourceUrl)
 	resp, err := f.Get(book.BookUrl)
 	if err != nil {
+		logger.Warn("book info request failed",
+			"source", w.sourceName(), "book", book.Name, "url", book.BookUrl, "error", err)
 		return nil, err
 	}
 	body := w.loginCheck(a, resp.Body)
 	w.analyzeBookInfo(book, body, a, book.BookUrl, resp.URL, canReName)
 	syncVars(book, a)
+	logger.Debug("book info fetched",
+		"source", w.sourceName(), "book", book.Name, "author", book.Author, "tocUrl", book.TocUrl)
 	return book, nil
 }
 
@@ -365,8 +398,11 @@ func (w *WebBook) ChapterList(book *model.Book) ([]*model.BookChapter, error) {
 	a := newAnalyze(w.Source, book, nil)
 	f := w.fetcher(a)
 	a.SetContent("", book.BookUrl)
+	start := time.Now()
 	resp, err := f.Get(tocURL)
 	if err != nil {
+		logger.Warn("chapter list request failed",
+			"source", w.sourceName(), "book", book.Name, "tocUrl", tocURL, "error", err)
 		return nil, err
 	}
 	body := w.loginCheck(a, resp.Body)
@@ -409,6 +445,8 @@ func (w *WebBook) ChapterList(book *model.Book) ([]*model.BookChapter, error) {
 		nextURLs = nexts
 	}
 	if len(chapters) == 0 {
+		logger.Warn("chapter list empty",
+			"source", w.sourceName(), "book", book.Name, "tocUrl", tocURL, "listRule", listRule)
 		return nil, fmt.Errorf("目录为空")
 	}
 	if !reverse {
@@ -426,6 +464,12 @@ func (w *WebBook) ChapterList(book *model.Book) ([]*model.BookChapter, error) {
 	book.TotalChapterNum = len(chapters)
 	book.LatestChapterTime = time.Now().UnixMilli()
 	syncVars(book, a)
+	logger.Debug("chapter list fetched",
+		"source", w.sourceName(),
+		"book", book.Name,
+		"count", len(chapters),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return chapters, nil
 }
 
@@ -529,6 +573,8 @@ func (w *WebBook) Content(book *model.Book, chapter *model.BookChapter, nextChap
 	}
 	resp, err := f.Get(chapterURL)
 	if err != nil {
+		logger.Warn("chapter content request failed",
+			"source", w.sourceName(), "book", book.Name, "chapter", chapter.Title, "url", chapterURL, "error", err)
 		return "", err
 	}
 	body := w.loginCheck(a, resp.Body)

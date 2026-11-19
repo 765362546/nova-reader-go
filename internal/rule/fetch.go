@@ -222,8 +222,17 @@ func (f *Fetcher) Get(rawURL string) (*Response, error) {
 	var lastErr error
 	for attempt := 0; attempt < retry; attempt++ {
 		f.wait()
+		start := time.Now()
 		resp, body, err := f.doRequest(urlPart, opt)
+		elapsed := time.Since(start)
 		if err == nil && resp.StatusCode < 500 {
+			logger.Debug("http fetch",
+				"source", f.sourceName(),
+				"url", urlPart,
+				"status", resp.StatusCode,
+				"bytes", len(body),
+				"duration_ms", elapsed.Milliseconds(),
+			)
 			return f.buildResponse(resp, body, opt), nil
 		}
 		if err != nil {
@@ -231,8 +240,31 @@ func (f *Fetcher) Get(rawURL string) (*Response, error) {
 		} else {
 			lastErr = fmt.Errorf("http %d", resp.StatusCode)
 		}
+		logger.Debug("http fetch retry",
+			"source", f.sourceName(),
+			"url", urlPart,
+			"attempt", attempt+1,
+			"error", lastErr,
+		)
 	}
+	logger.Warn("http fetch failed",
+		"source", f.sourceName(),
+		"url", urlPart,
+		"attempts", retry,
+		"error", lastErr,
+	)
 	return nil, lastErr
+}
+
+// sourceName identifies the book source in log records.
+func (f *Fetcher) sourceName() string {
+	if f.Source == nil {
+		return ""
+	}
+	if f.Source.BookSourceName != "" {
+		return f.Source.BookSourceName
+	}
+	return f.Source.BookSourceUrl
 }
 
 func (f *Fetcher) variable(key string) string {

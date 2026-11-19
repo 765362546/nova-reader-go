@@ -406,6 +406,14 @@ func (s *Server) cacheBookSSE(w http.ResponseWriter, r *http.Request, ri *reqInf
 		"successCount": successCount,
 		"failedCount":  failedCount,
 	})
+	logger.Info("book cache completed",
+		"namespace", ns,
+		"book", book.Name,
+		"total", len(chapters),
+		"cached", len(cached),
+		"success", successCount,
+		"failed", failedCount,
+	)
 	return nil
 }
 

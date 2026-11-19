@@ -6,15 +6,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/dop251/goja"
 
+	"github.com/765362546/novel-reader-go/internal/logging"
 	"github.com/765362546/novel-reader-go/internal/model"
 )
+
+var logger = logging.Component("rule")
 
 // androidID is a stable fake device id for sources that call java.androidId().
 var androidID = fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf("%d", time.Now().UnixNano()))))
@@ -74,6 +76,7 @@ func (a *Analyze) EvalJS(code string, result any) any {
 			}
 			body, err := a.Fetch(u)
 			if err != nil {
+				logger.Debug("js ajax failed", "url", u, "error", err)
 				return goja.Null()
 			}
 			return vm.ToValue(body)
@@ -113,7 +116,7 @@ func (a *Analyze) EvalJS(code string, result any) any {
 			return vm.ToValue(argString(call, 1))
 		},
 		"log": func(call goja.FunctionCall) goja.Value {
-			log.Printf("[js] %s", argString(call, 0))
+			logger.Debug("js rule log", "message", argString(call, 0), "baseUrl", a.BaseUrl)
 			return goja.Undefined()
 		},
 		"toast": func(call goja.FunctionCall) goja.Value { return goja.Undefined() },
@@ -194,7 +197,11 @@ func (a *Analyze) EvalJS(code string, result any) any {
 
 	val, err := vm.RunString(code)
 	if err != nil {
-		log.Printf("[js] eval error: %v\ncode: %s", err, truncate(code, 300))
+		logger.Warn("js rule eval failed",
+			"error", err,
+			"baseUrl", a.BaseUrl,
+			"code", truncate(code, 300),
+		)
 		return ""
 	}
 	// Propagate book url changes made from JS.

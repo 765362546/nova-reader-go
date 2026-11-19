@@ -146,6 +146,8 @@ func (s *Server) getRssArticles(w http.ResponseWriter, r *http.Request, ri *reqI
 	}
 	list, next, err := rss.Articles(sortName, sortURL, src, page)
 	if err != nil {
+		logger.Warn("fetch rss articles failed",
+			"namespace", ri.Namespace, "source", sourceURL, "sortName", sortName, "sortUrl", sortURL, "page", page, "error", err)
 		return failure(err.Error())
 	}
 	return success(map[string]any{"first": list, "second": next})
@@ -181,6 +183,8 @@ func (s *Server) getRssContent(w http.ResponseWriter, r *http.Request, ri *reqIn
 		var err error
 		content, err = rss.Content(article, *src.RuleContent, src)
 		if err != nil {
+			logger.Warn("fetch rss content failed",
+				"namespace", ri.Namespace, "source", sourceURL, "link", link, "error", err)
 			return failure(err.Error())
 		}
 	}

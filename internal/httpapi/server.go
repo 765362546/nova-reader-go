@@ -4,18 +4,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/765362546/novel-reader-go/internal/config"
+	"github.com/765362546/novel-reader-go/internal/logging"
 	"github.com/765362546/novel-reader-go/internal/model"
 	"github.com/765362546/novel-reader-go/internal/store"
 )
+
+var logger = logging.Component("httpapi")
 
 // ReturnData is the unified API response.
 type ReturnData struct {
@@ -60,7 +65,7 @@ type Server struct {
 func New(app *config.App) *Server {
 	store := store.New(app.StorageRoot())
 	if err := os.MkdirAll(filepath.Join(app.StorageRoot(), "data", "default"), 0o755); err != nil {
-		log.Printf("create storage dir: %v", err)
+		logger.Error("create storage dir failed", "path", app.StorageRoot(), "error", err)
 	}
 	assetsDir := filepath.Join(app.StorageRoot(), "assets")
 	_ = os.MkdirAll(assetsDir, 0o755)
@@ -97,6 +102,13 @@ func (s *Server) api(fn handlerFunc) http.HandlerFunc {
 		if rd == nil {
 			return
 		}
+		if !rd.IsSuccess {
+			logger.Debug("api request failed",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"error", rd.ErrorMsg,
+			)
+		}
 		writeJSON(w, rd)
 	}
 }
@@ -112,17 +124,93 @@ func (s *Server) Run() error {
 	mux := http.NewServeMux()
 	s.routes(mux)
 	addr := fmt.Sprintf(":%d", s.App.Port)
-	log.Printf("novel-reader-go listening on %s", addr)
+	logger.Info("http server listening",
+		"addr", addr,
+		"webDir", s.App.WebDir,
+		"storage", s.Store.Root,
+		"secure", s.App.Secure,
+	)
 	s.StartScheduler()
-	handler := recovery(mux)
+	handler := requestLogger(recovery(mux))
 	return http.ListenAndServe(addr, handler)
+}
+
+// requestLogger records every request at Debug, promotes slow requests to
+// Warn and 5xx responses to Error.
+func requestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &responseRecorder{ResponseWriter: w}
+		next.ServeHTTP(rw, r)
+		if rw.status == 0 {
+			rw.status = http.StatusOK
+		}
+		elapsed := time.Since(start)
+		attrs := []any{
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rw.status,
+			"bytes", rw.bytes,
+			"duration_ms", elapsed.Milliseconds(),
+			"remote", remoteIP(r),
+		}
+		switch {
+		case rw.status >= http.StatusInternalServerError:
+			logger.Error("http request failed", attrs...)
+		case elapsed > 2*time.Second:
+			logger.Warn("slow http request", attrs...)
+		default:
+			logger.Debug("http request", attrs...)
+		}
+	})
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (rw *responseRecorder) WriteHeader(code int) {
+	if rw.status == 0 {
+		rw.status = code
+		rw.ResponseWriter.WriteHeader(code)
+	}
+}
+
+func (rw *responseRecorder) Write(b []byte) (int, error) {
+	if rw.status == 0 {
+		rw.status = http.StatusOK
+	}
+	n, err := rw.ResponseWriter.Write(b)
+	rw.bytes += n
+	return n, err
+}
+
+// Flush keeps SSE endpoints working through the wrapper.
+func (rw *responseRecorder) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func remoteIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func recovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				log.Printf("panic: %v", err)
+				logger.Error("panic recovered",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"panic", err,
+					"stack", string(debug.Stack()),
+				)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()

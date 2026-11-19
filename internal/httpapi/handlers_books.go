@@ -205,6 +205,8 @@ func (s *Server) saveBook(w http.ResponseWriter, r *http.Request, ri *reqInfo) *
 		}
 		info, err := webbook.New(&bs).BookInfo(book, false)
 		if err != nil {
+			logger.Warn("save book: fetch book info failed",
+				"namespace", ns, "book", book.Name, "bookUrl", book.BookUrl, "source", bs.BookSourceName, "error", err)
 			return failure("获取书籍信息失败: " + err.Error())
 		}
 		if info == nil {
@@ -244,6 +246,17 @@ func (s *Server) saveBook(w http.ResponseWriter, r *http.Request, ri *reqInfo) *
 	}
 	_ = s.saveBooks(ns, books)
 	s.saveBookSourcesForBook(ns, book, []*model.SearchBook{searchBookFromBook(book)}, false)
+	action := "added"
+	if existIndex >= 0 {
+		action = "updated"
+	}
+	logger.Info("shelf book saved",
+		"namespace", ns,
+		"book", book.Name,
+		"author", book.Author,
+		"action", action,
+		"origin", book.Origin,
+	)
 	return success(book)
 }
 
@@ -358,10 +371,19 @@ func (s *Server) searchBook(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 	if json.Unmarshal([]byte(srcStr), &bs) != nil {
 		return failure("书源信息错误")
 	}
+	start := time.Now()
 	list, err := webbook.New(&bs).Search(key, page)
 	if err != nil {
+		logger.Warn("search book failed", "source", bs.BookSourceName, "key", key, "page", page, "error", err)
 		return failure("搜索失败: " + err.Error())
 	}
+	logger.Debug("search book completed",
+		"source", bs.BookSourceName,
+		"key", key,
+		"page", page,
+		"count", len(list),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return success(list)
 }
 
@@ -445,10 +467,18 @@ func (s *Server) searchBookMulti(w http.ResponseWriter, r *http.Request, ri *req
 	}
 	seen := map[string]bool{}
 	result := []*model.SearchBook{}
+	start := time.Now()
 	next := s.runSearchBatches(ri.Namespace, sources, key, lastIndex+1, concurrent, 8, func(loop, li int, batch []*model.SearchBook) bool {
 		dedupSearchBooks(batch, seen, &result)
 		return len(result) < searchSize
 	})
+	logger.Debug("multi-source search completed",
+		"namespace", ri.Namespace,
+		"key", key,
+		"lastIndex", next,
+		"count", len(result),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	return success(map[string]any{"lastIndex": next, "list": result})
 }
 
@@ -481,6 +511,7 @@ func (s *Server) searchBookMultiSSE(w http.ResponseWriter, r *http.Request, ri *
 	}
 	seen := map[string]bool{}
 	result := []*model.SearchBook{}
+	start := time.Now()
 	next := s.runSearchBatches(ri.Namespace, sources, key, lastIndex+1, concurrent, 8, func(loop, li int, batch []*model.SearchBook) bool {
 		loopResult := []*model.SearchBook{}
 		dedupSearchBooks(batch, seen, &loopResult)
@@ -488,6 +519,13 @@ func (s *Server) searchBookMultiSSE(w http.ResponseWriter, r *http.Request, ri *
 		sseWrite(w, f, "", map[string]any{"lastIndex": li, "data": loopResult})
 		return len(result) < searchSize
 	})
+	logger.Debug("multi-source search stream completed",
+		"namespace", ri.Namespace,
+		"key", key,
+		"lastIndex", next,
+		"count", len(result),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
 	sseWrite(w, f, "end", map[string]any{"lastIndex": next})
 	return nil
 }
@@ -599,11 +637,17 @@ func (s *Server) getChapterList(w http.ResponseWriter, r *http.Request, ri *reqI
 	srcStr := s.sourceStringFromRequest(m, ri.Namespace, book.Origin)
 	chapters, err := s.chapterList(ri.Namespace, book, srcStr, refresh > 0)
 	if err != nil {
+		logger.Warn("get chapter list failed",
+			"namespace", ri.Namespace, "book", book.Name, "bookUrl", book.BookUrl, "error", err)
 		return failure(err.Error())
 	}
 	if len(chapters) == 0 {
+		logger.Warn("get chapter list empty",
+			"namespace", ri.Namespace, "book", book.Name, "bookUrl", book.BookUrl, "tocUrl", book.TocUrl)
 		return failure("目录为空")
 	}
+	logger.Debug("chapter list served",
+		"namespace", ri.Namespace, "book", book.Name, "count", len(chapters))
 	return success(chapters)
 }
 
@@ -699,6 +743,9 @@ func (s *Server) getBookContent(w http.ResponseWriter, r *http.Request, ri *reqI
 			}
 			content, err = webbook.New(&bs).Content(book, chapter, nextURL)
 			if err != nil {
+				logger.Warn("get chapter content failed",
+					"namespace", ns, "book", book.Name, "chapter", chapter.Title,
+					"chapterUrl", chapter.URL, "error", err)
 				return failure(err.Error())
 			}
 			_ = os.MkdirAll(filepath.Dir(cacheFile), 0o755)

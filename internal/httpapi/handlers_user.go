@@ -30,6 +30,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, ri *reqInfo) *Ret
 	existed, ok := users[username]
 	if !ok {
 		if isLogin {
+			logger.Warn("login failed: user not found", "username", username)
 			return failure("用户不存在")
 		}
 		if len(username) < 5 {
@@ -64,14 +65,17 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, ri *reqInfo) *Ret
 			CreatedAt: time.Now().UnixMilli(),
 			TokenMap:  map[string]int64{},
 		}
+		logger.Info("user registered", "username", username)
 		return success(s.saveUserSession(w, username, users, u, false))
 	}
 	if !isLogin {
 		return failure("用户名已被占用")
 	}
 	if genEncryptedPassword(password, existed.Salt) != existed.Password {
+		logger.Warn("login failed: wrong password", "username", username)
 		return failure("密码错误")
 	}
+	logger.Info("user logged in", "username", username)
 	return success(s.saveUserSession(w, username, users, existed, false))
 }
 
