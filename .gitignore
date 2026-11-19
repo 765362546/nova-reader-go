@@ -1,0 +1,36 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+novel-server
+tmp/
+
+# Build output
+/dist/
+/build/
+
+# Storage
+/storage/
+/tmp/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+/vendor/
+
+# Test binary
+*.test
+*.out
+
+# Node modules
+node_modules/
