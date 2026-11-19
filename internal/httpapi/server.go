@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -20,6 +22,7 @@ import (
 	"github.com/765362546/novel-reader-go/internal/logging"
 	"github.com/765362546/novel-reader-go/internal/model"
 	"github.com/765362546/novel-reader-go/internal/store"
+	webassets "github.com/765362546/novel-reader-go/web"
 )
 
 var logger = logging.Component("httpapi")
@@ -396,18 +399,29 @@ func writeSSE(w http.ResponseWriter, rd *ReturnData, f http.Flusher) {
 }
 
 func (s *Server) webHandler() http.Handler {
-	dir := s.App.WebDir
-	if dist := filepath.Join(dir, "dist"); dirExists(dist) {
-		dir = dist
+	dist := filepath.Join(s.App.WebDir, "dist")
+	if dirExists(dist) {
+		return spaDiskHandler(dist)
 	}
-	fs := http.FileServer(http.Dir(dir))
+	// Fall back to the frontend embedded at build time, if any.
+	if sub, err := fs.Sub(webassets.Dist, "dist"); err == nil {
+		if _, err := fs.Stat(sub, "index.html"); err == nil {
+			return spaEmbeddedHandler(sub)
+		}
+	}
+	// Development fallback: serve the raw web directory before a build.
+	return spaDiskHandler(s.App.WebDir)
+}
+
+func spaDiskHandler(dir string) http.Handler {
+	fileServer := http.FileServer(http.Dir(dir))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := filepath.Join(dir, filepath.Clean(r.URL.Path))
-		if !strings.HasPrefix(path, filepath.Clean(dir)) {
+		target := filepath.Join(dir, filepath.Clean(r.URL.Path))
+		if !strings.HasPrefix(target, filepath.Clean(dir)) {
 			http.NotFound(w, r)
 			return
 		}
-		if _, err := os.Stat(path); err != nil && !strings.HasPrefix(r.URL.Path, "/api") {
+		if _, err := os.Stat(target); err != nil && !strings.HasPrefix(r.URL.Path, "/api") {
 			// SPA history fallback
 			index := filepath.Join(dir, "index.html")
 			if _, err := os.Stat(index); err == nil {
@@ -415,7 +429,26 @@ func (s *Server) webHandler() http.Handler {
 				return
 			}
 		}
-		fs.ServeHTTP(w, r)
+		fileServer.ServeHTTP(w, r)
+	})
+}
+
+func spaEmbeddedHandler(fsys fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(fsys))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if name == "" {
+			name = "index.html"
+		}
+		if _, err := fs.Stat(fsys, name); err != nil {
+			// SPA history fallback
+			if data, err := fs.ReadFile(fsys, "index.html"); err == nil {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				_, _ = w.Write(data)
+				return
+			}
+		}
+		fileServer.ServeHTTP(w, r)
 	})
 }
 

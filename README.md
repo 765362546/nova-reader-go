@@ -72,7 +72,9 @@ npm install
 NODE_OPTIONS=--openssl-legacy-provider npm run build
 ```
 
-构建产物位于 `web/dist`，后端会自动识别并作为静态资源目录。
+构建产物位于 `web/dist`。`go build` 时该目录会通过 `go:embed` 打包进二进制，
+因此最终产物是单文件，部署时无需再携带 `web/`。若目录尚未构建，程序会退回到
+从磁盘读取 `web/dist`（开发时优先使用磁盘文件，便于热更新）。
 
 ### 3. 编译并运行
 
