@@ -12,11 +12,27 @@ import (
 
 	"github.com/dop251/goja"
 
+	"github.com/765362546/novel-reader-go/internal/cache"
 	"github.com/765362546/novel-reader-go/internal/logging"
 	"github.com/765362546/novel-reader-go/internal/model"
 )
 
 var logger = logging.Component("rule")
+
+// jsProgramCache avoids re-parsing the same rule script on every evaluation.
+var jsProgramCache = cache.New[string, *goja.Program](256)
+
+func cachedProgram(code string) (*goja.Program, error) {
+	if p, ok := jsProgramCache.Get(code); ok {
+		return p, nil
+	}
+	p, err := goja.Compile("rule.js", code, false)
+	if err != nil {
+		return nil, err
+	}
+	jsProgramCache.Put(code, p)
+	return p, nil
+}
 
 // androidID is a stable fake device id for sources that call java.androidId().
 var androidID = fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf("%d", time.Now().UnixNano()))))
@@ -195,7 +211,16 @@ func (a *Analyze) EvalJS(code string, result any) any {
 		return vm.ToValue(fmt.Sprintf("%d", time.Now().UnixNano()))
 	})
 
-	val, err := vm.RunString(code)
+	program, err := cachedProgram(code)
+	if err != nil {
+		logger.Warn("js rule compile failed",
+			"error", err,
+			"baseUrl", a.BaseUrl,
+			"code", truncate(code, 300),
+		)
+		return ""
+	}
+	val, err := vm.RunProgram(program)
 	if err != nil {
 		logger.Warn("js rule eval failed",
 			"error", err,

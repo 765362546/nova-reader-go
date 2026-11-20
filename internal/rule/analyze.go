@@ -6,8 +6,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"sync"
 
+	"github.com/765362546/novel-reader-go/internal/cache"
 	"github.com/765362546/novel-reader-go/internal/model"
 	"golang.org/x/net/html"
 )
@@ -30,31 +30,20 @@ var (
 	getPattern     = regexp.MustCompile(`(?i)@get:\{([^}]+)\}`)
 	regexGroupPatt = regexp.MustCompile(`\$\d{1,2}`)
 
-	regexCacheMu sync.RWMutex
-	regexCache   = map[string]*regexp.Regexp{}
+	regexCache = cache.New[string, *regexp.Regexp](2048)
 )
-
-const maxRegexCache = 2048
 
 // compiledRegexp caches compiled rule patterns; chapter rules are evaluated
 // repeatedly against every page, so recompiling the same regexp is wasteful.
 func compiledRegexp(pattern string) (*regexp.Regexp, error) {
-	regexCacheMu.RLock()
-	re := regexCache[pattern]
-	regexCacheMu.RUnlock()
-	if re != nil {
+	if re, ok := regexCache.Get(pattern); ok {
 		return re, nil
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return nil, err
 	}
-	regexCacheMu.Lock()
-	if len(regexCache) >= maxRegexCache {
-		regexCache = map[string]*regexp.Regexp{}
-	}
-	regexCache[pattern] = re
-	regexCacheMu.Unlock()
+	regexCache.Put(pattern, re)
 	return re, nil
 }
 

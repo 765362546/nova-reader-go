@@ -53,18 +53,54 @@ var (
 
 func sharedClient(key string) *http.Client {
 	if key == "" {
-		jar, _ := cookiejar.New(nil)
-		return &http.Client{Jar: jar, Timeout: 40 * time.Second}
+		return newHTTPClient()
 	}
 	clientsMu.Lock()
 	defer clientsMu.Unlock()
 	if c := clients[key]; c != nil {
 		return c
 	}
-	jar, _ := cookiejar.New(nil)
-	c := &http.Client{Jar: jar, Timeout: 40 * time.Second}
+	c := newHTTPClient()
 	clients[key] = c
 	return c
+}
+
+// newHTTPClient gives each book source its own Transport so idle connections
+// can be released when the source is deleted without touching other sources.
+func newHTTPClient() *http.Client {
+	jar, _ := cookiejar.New(nil)
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	return &http.Client{Jar: jar, Timeout: 40 * time.Second, Transport: tr}
+}
+
+// CloseSourceClient drops the pooled client for a deleted book source.
+func CloseSourceClient(url string) {
+	if url == "" {
+		return
+	}
+	clientsMu.Lock()
+	c := clients[url]
+	delete(clients, url)
+	clientsMu.Unlock()
+	if c != nil {
+		if tr, ok := c.Transport.(interface{ CloseIdleConnections() }); ok {
+			tr.CloseIdleConnections()
+		}
+	}
+}
+
+// CloseAllSourceClients drops every pooled client, e.g. after deleting all
+// book sources for a namespace.
+func CloseAllSourceClients() {
+	clientsMu.Lock()
+	old := clients
+	clients = map[string]*http.Client{}
+	clientsMu.Unlock()
+	for _, c := range old {
+		if tr, ok := c.Transport.(interface{ CloseIdleConnections() }); ok {
+			tr.CloseIdleConnections()
+		}
+	}
 }
 
 func NewFetcher(source *model.BookSource, ruleData *Analyze) *Fetcher {

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/765362546/novel-reader-go/internal/model"
+	"github.com/765362546/novel-reader-go/internal/rule"
 )
 
 func (s *Server) saveBookSource(w http.ResponseWriter, r *http.Request, ri *reqInfo) *ReturnData {
@@ -127,6 +128,7 @@ func (s *Server) deleteBookSource(w http.ResponseWriter, r *http.Request, ri *re
 		list = removeAt(list, idx)
 	}
 	_ = s.saveArray(ns, "bookSource", list)
+	rule.CloseSourceClient(src.BookSourceUrl)
 	return success("")
 }
 
@@ -150,6 +152,7 @@ func (s *Server) deleteBookSources(w http.ResponseWriter, r *http.Request, ri *r
 		}
 		if idx := containsSource(list, src.BookSourceUrl); idx >= 0 {
 			list = removeAt(list, idx)
+			rule.CloseSourceClient(src.BookSourceUrl)
 		}
 	}
 	_ = s.saveArray(ns, "bookSource", list)
@@ -161,6 +164,7 @@ func (s *Server) deleteAllBookSources(w http.ResponseWriter, r *http.Request, ri
 		return failureLogin()
 	}
 	_ = s.saveArray(ri.managerNameSpace(), "bookSource", []json.RawMessage{})
+	rule.CloseAllSourceClients()
 	return success("")
 }
 

@@ -289,6 +289,8 @@ func (s *Server) deleteBook(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 	}
 	books = removeAtIdx(books, idx)
 	_ = s.saveBooks(ns, books)
+	s.invalidateChapterList(ns, book)
+	s.invalidateContentCache(ns, book)
 	_ = os.RemoveAll(s.Store.Dir("data", ns, util.BookDirName(book.Name, book.Author)))
 	return success("删除书籍成功")
 }
@@ -312,6 +314,8 @@ func (s *Server) deleteBooks(w http.ResponseWriter, r *http.Request, ri *reqInfo
 				break
 			}
 		}
+		s.invalidateChapterList(ns, book)
+		s.invalidateContentCache(ns, book)
 		_ = os.RemoveAll(s.Store.Dir("data", ns, util.BookDirName(book.Name, book.Author)))
 	}
 	_ = s.saveBooks(ns, books)
@@ -709,29 +713,28 @@ func (s *Server) getBookContent(w http.ResponseWriter, r *http.Request, ri *reqI
 	ns := ri.Namespace
 	var content string
 	if book.Origin == model.BookTypeLocal {
-		if localbook.IsEpub(book) {
-			if !s.extractEpub(book, false) {
-				return failure("Epub书籍解压失败")
+		if cached, ok := s.chapterCacheContent(ns, book, chapter.Index); ok {
+			content = cached
+		} else {
+			if localbook.IsEpub(book) {
+				if !s.extractEpub(book, false) {
+					return failure("Epub书籍解压失败")
+				}
 			}
-		}
-		if localbook.IsCbz(book) && !s.extractCbz(book, false) {
-			return failure("CBZ书籍解压失败")
-		}
-		content, err = localbook.GetContent(book, chapter, s.App.WorkDir)
-		if err != nil {
-			return failure(err.Error())
-		}
-		if localbook.IsEpub(book) {
-			cacheFile := filepath.Join(s.chapterCacheDir(ns, book), fmt.Sprintf("%d.txt", chapter.Index))
-			_ = os.MkdirAll(filepath.Dir(cacheFile), 0o755)
-			_ = os.WriteFile(cacheFile, []byte(content), 0o644)
+			if localbook.IsCbz(book) && !s.extractCbz(book, false) {
+				return failure("CBZ书籍解压失败")
+			}
+			content, err = localbook.GetContent(book, chapter, s.App.WorkDir)
+			if err != nil {
+				return failure(err.Error())
+			}
+			if localbook.IsEpub(book) {
+				_ = s.putChapterCacheContent(ns, book, chapter.Index, content)
+			}
 		}
 	} else {
-		cacheFile := filepath.Join(s.chapterCacheDir(ns, book), fmt.Sprintf("%d.txt", chapter.Index))
 		if refresh <= 0 {
-			if raw, e := os.ReadFile(cacheFile); e == nil {
-				content = string(raw)
-			}
+			content, _ = s.chapterCacheContent(ns, book, chapter.Index)
 		}
 		if content == "" {
 			if srcStr == "" {
@@ -748,8 +751,7 @@ func (s *Server) getBookContent(w http.ResponseWriter, r *http.Request, ri *reqI
 					"chapterUrl", chapter.URL, "error", err)
 				return failure(err.Error())
 			}
-			_ = os.MkdirAll(filepath.Dir(cacheFile), 0o755)
-			_ = os.WriteFile(cacheFile, []byte(content), 0o644)
+			_ = s.putChapterCacheContent(ns, book, chapter.Index, content)
 		}
 		if book.UseReplaceRule {
 			content = s.applyReplaceRules(ns, content)
@@ -1050,6 +1052,8 @@ func (s *Server) setBookSource(w http.ResponseWriter, r *http.Request, ri *reqIn
 			exist.CoverUrl = newBook.CoverUrl
 		}
 	})
+	s.invalidateChapterList(ns, book)
+	s.invalidateContentCache(ns, book)
 	updated := s.shelfBookByURL(ns, newURL)
 	if updated == nil {
 		updated = newBook
@@ -1330,6 +1334,7 @@ func (s *Server) deleteBookCache(w http.ResponseWriter, r *http.Request, ri *req
 		return failure("书籍信息错误")
 	}
 	_ = os.RemoveAll(s.chapterCacheDir(ri.Namespace, book))
+	s.invalidateContentCache(ri.Namespace, book)
 	return success("")
 }
 

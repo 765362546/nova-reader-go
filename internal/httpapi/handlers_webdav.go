@@ -463,6 +463,8 @@ func (s *Server) syncFromWebdav(ns, zipPath string) bool {
 			_ = os.Rename(from, filepath.Join(dataDir, name))
 		}
 	}
+	s.invalidateSourceIndex(ns)
+	s.invalidateReplaceRules(ns)
 	progressDir := filepath.Join(home, "bookProgress")
 	if _, err := os.Stat(progressDir); err != nil {
 		progressDir = filepath.Join(home, "legado", "bookProgress")

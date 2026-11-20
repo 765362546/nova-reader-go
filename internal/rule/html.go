@@ -5,39 +5,27 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andybalholm/cascadia"
 	"golang.org/x/net/html"
+
+	"github.com/765362546/novel-reader-go/internal/cache"
 )
 
 // CSS selectors are compiled once and reused: goquery's Find recompiles the
 // selector on every call, which is expensive for the hot chapter/book paths.
-var (
-	selectorMu    sync.RWMutex
-	selectorCache = map[string]cascadia.Selector{}
-)
-
-const maxSelectorCache = 4096
+var selectorCache = cache.New[string, cascadia.Selector](4096)
 
 func compileSelector(selector string) cascadia.Selector {
-	selectorMu.RLock()
-	m := selectorCache[selector]
-	selectorMu.RUnlock()
-	if m != nil {
+	if m, ok := selectorCache.Get(selector); ok {
 		return m
 	}
 	compiled, err := cascadia.Compile(selector)
 	if err != nil {
 		return nil
 	}
-	selectorMu.Lock()
-	if len(selectorCache) >= maxSelectorCache {
-		selectorCache = map[string]cascadia.Selector{}
-	}
-	selectorCache[selector] = compiled
-	selectorMu.Unlock()
+	selectorCache.Put(selector, compiled)
 	return compiled
 }
 

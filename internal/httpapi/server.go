@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -17,7 +19,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/765362546/novel-reader-go/internal/cache"
 	"github.com/765362546/novel-reader-go/internal/config"
 	"github.com/765362546/novel-reader-go/internal/logging"
 	"github.com/765362546/novel-reader-go/internal/model"
@@ -61,16 +65,30 @@ type Server struct {
 	Store    *store.Store
 	Sessions *Sessions
 
-	cacheMu       sync.Mutex
-	bookInfoCache map[string]*model.Book
-	invalidCache  map[string]map[string]invalidBookSource
-	shelfMu       sync.Mutex
+	cacheMu      sync.Mutex
+	invalidCache map[string]map[string]invalidBookSource
+	shelfMu      sync.Mutex
+
+	// In-memory caches keep the hottest JSON payloads out of the disk path.
+	bookInfoCache    *cache.LRU[string, *model.Book]
+	chapterListCache *cache.LRU[string, []*model.BookChapter]
+	contentCache     *cache.LRU[string, string]
+	replaceRuleCache *cache.LRU[string, []*model.ReplaceRule]
+
+	// chapterCacheMu serializes read-modify-write cycles on the per-book
+	// chapter cache file.
+	chapterCacheMu sync.Mutex
 
 	sourceMu      sync.RWMutex
 	sourceIndexes map[string]*bookSourceIndex
 
 	breakerMu sync.Mutex
 	breakers  map[string]*sourceBreaker
+
+	refreshSem chan struct{}
+
+	httpMu     sync.Mutex
+	httpServer *http.Server
 }
 
 func New(app *config.App) *Server {
@@ -90,13 +108,16 @@ func New(app *config.App) *Server {
 	}
 
 	return &Server{
-		App:           app,
-		Store:         store,
-		Sessions:      NewSessions(),
-		bookInfoCache: map[string]*model.Book{},
-		invalidCache:  map[string]map[string]invalidBookSource{},
-		sourceIndexes: map[string]*bookSourceIndex{},
-		breakers:      map[string]*sourceBreaker{},
+		App:              app,
+		Store:            store,
+		Sessions:         NewSessions(),
+		bookInfoCache:    cache.New[string, *model.Book](1024),
+		chapterListCache: cache.New[string, []*model.BookChapter](256),
+		contentCache:     cache.New[string, string](512),
+		replaceRuleCache: cache.New[string, []*model.ReplaceRule](64),
+		invalidCache:     map[string]map[string]invalidBookSource{},
+		sourceIndexes:    map[string]*bookSourceIndex{},
+		breakers:         map[string]*sourceBreaker{},
 	}
 }
 
@@ -145,7 +166,33 @@ func (s *Server) Run() error {
 	)
 	s.StartScheduler()
 	handler := requestLogger(recovery(r))
-	return http.ListenAndServe(addr, handler)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		// No WriteTimeout: SSE endpoints hold long-lived connections.
+	}
+	s.httpMu.Lock()
+	s.httpServer = srv
+	s.httpMu.Unlock()
+	err := srv.ListenAndServe()
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
+// Shutdown gracefully stops the HTTP server, waiting for in-flight requests
+// (including short SSE streams) until ctx expires.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.httpMu.Lock()
+	srv := s.httpServer
+	s.httpMu.Unlock()
+	if srv == nil {
+		return nil
+	}
+	return srv.Shutdown(ctx)
 }
 
 // requestLogger records every request at Debug, promotes slow requests to
@@ -232,6 +279,19 @@ func recovery(next http.Handler) http.Handler {
 }
 
 func (s *Server) routes(r chi.Router) {
+	// Compress API JSON and text assets. text/event-stream is deliberately not
+	// listed so SSE streams stay uncompressed and flush immediately.
+	r.Use(middleware.Compress(5,
+		"application/json",
+		"text/html",
+		"text/css",
+		"text/plain",
+		"text/javascript",
+		"application/javascript",
+		"application/xml",
+		"image/svg+xml",
+	))
+
 	// system
 	r.Get("/reader3/getSystemInfo", s.api(s.getSystemInfo))
 
@@ -415,18 +475,50 @@ func (s *Server) webHandler() http.Handler {
 
 func spaDiskHandler(dir string) http.Handler {
 	fileServer := http.FileServer(http.Dir(dir))
+	root := filepath.Clean(dir)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		target := filepath.Join(dir, filepath.Clean(r.URL.Path))
-		if !strings.HasPrefix(target, filepath.Clean(dir)) {
+		target := filepath.Join(root, filepath.Clean("/"+r.URL.Path))
+		if !strings.HasPrefix(target, root) {
 			http.NotFound(w, r)
 			return
 		}
-		if _, err := os.Stat(target); err != nil && !strings.HasPrefix(r.URL.Path, "/api") {
+		st, err := os.Stat(target)
+		if (err != nil || st.IsDir()) && !strings.HasPrefix(r.URL.Path, "/api") {
 			// SPA history fallback
-			index := filepath.Join(dir, "index.html")
+			index := filepath.Join(root, "index.html")
 			if _, err := os.Stat(index); err == nil {
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Add("Vary", "Accept-Encoding")
+				if canGzip(r) {
+					if gz, gerr := os.Open(index + ".gz"); gerr == nil {
+						defer gz.Close()
+						w.Header().Set("Content-Encoding", "gzip")
+						w.Header().Set("Content-Type", "text/html; charset=utf-8")
+						if gst, serr := gz.Stat(); serr == nil {
+							http.ServeContent(w, r, "index.html", gst.ModTime(), gz)
+							return
+						}
+					}
+				}
 				http.ServeFile(w, r, index)
 				return
+			}
+		}
+		if err == nil && !st.IsDir() {
+			w.Header().Set("Cache-Control", staticCacheControl(r.URL.Path))
+			w.Header().Add("Vary", "Accept-Encoding")
+			if canGzip(r) && compressibleAsset(r.URL.Path) {
+				if gz, gerr := os.Open(target + ".gz"); gerr == nil {
+					defer gz.Close()
+					if gst, serr := gz.Stat(); serr == nil {
+						w.Header().Set("Content-Encoding", "gzip")
+						if ct := mime.TypeByExtension(filepath.Ext(target)); ct != "" {
+							w.Header().Set("Content-Type", ct)
+						}
+						http.ServeContent(w, r, st.Name(), gst.ModTime(), gz)
+						return
+					}
+				}
 			}
 		}
 		fileServer.ServeHTTP(w, r)
@@ -440,16 +532,71 @@ func spaEmbeddedHandler(fsys fs.FS) http.Handler {
 		if name == "" {
 			name = "index.html"
 		}
-		if _, err := fs.Stat(fsys, name); err != nil {
+		if st, err := fs.Stat(fsys, name); err != nil || st.IsDir() {
 			// SPA history fallback
 			if data, err := fs.ReadFile(fsys, "index.html"); err == nil {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Add("Vary", "Accept-Encoding")
+				if canGzip(r) {
+					if gz, gerr := fs.ReadFile(fsys, "index.html.gz"); gerr == nil {
+						w.Header().Set("Content-Encoding", "gzip")
+						_, _ = w.Write(gz)
+						return
+					}
+				}
 				_, _ = w.Write(data)
+				return
+			}
+		}
+		w.Header().Set("Cache-Control", staticCacheControl("/"+name))
+		w.Header().Add("Vary", "Accept-Encoding")
+		if canGzip(r) && compressibleAsset(name) {
+			if gz, gerr := fs.ReadFile(fsys, name+".gz"); gerr == nil {
+				w.Header().Set("Content-Encoding", "gzip")
+				if ct := mime.TypeByExtension(path.Ext(name)); ct != "" {
+					w.Header().Set("Content-Type", ct)
+				}
+				_, _ = w.Write(gz)
 				return
 			}
 		}
 		fileServer.ServeHTTP(w, r)
 	})
+}
+
+// staticCacheControl gives hashed build artifacts a long immutable lifetime
+// while keeping HTML entry points revalidated.
+func staticCacheControl(p string) string {
+	ext := strings.ToLower(path.Ext(p))
+	if ext == ".html" || ext == "" {
+		return "no-cache"
+	}
+	if strings.HasPrefix(p, "/js/") || strings.HasPrefix(p, "/css/") ||
+		strings.HasPrefix(p, "/fonts/") || strings.HasPrefix(p, "/img/") ||
+		strings.HasPrefix(p, "/media/") {
+		return "public, max-age=31536000, immutable"
+	}
+	switch ext {
+	case ".js", ".css", ".woff", ".woff2", ".ttf", ".eot", ".png", ".jpg",
+		".jpeg", ".gif", ".svg", ".webp", ".ico":
+		return "public, max-age=31536000, immutable"
+	}
+	return "no-cache"
+}
+
+func canGzip(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept-Encoding"), "gzip")
+}
+
+// compressibleAsset reports whether a static file benefits from gzip. Already
+// compressed formats (images, woff2, gz) are skipped.
+func compressibleAsset(p string) bool {
+	switch strings.ToLower(path.Ext(p)) {
+	case ".js", ".css", ".html", ".svg", ".json", ".xml", ".txt", ".map", ".ico":
+		return true
+	}
+	return false
 }
 
 func dirExists(p string) bool {

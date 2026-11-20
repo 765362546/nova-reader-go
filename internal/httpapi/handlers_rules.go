@@ -54,6 +54,7 @@ func (s *Server) saveReplaceRule(w http.ResponseWriter, r *http.Request, ri *req
 		list = append(list, raw)
 	}
 	_ = s.saveArray(ns, "replaceRule", list)
+	s.invalidateReplaceRules(ns)
 	return success("")
 }
 
@@ -90,6 +91,7 @@ func (s *Server) saveReplaceRules(w http.ResponseWriter, r *http.Request, ri *re
 		}
 	}
 	_ = s.saveArray(ns, "replaceRule", list)
+	s.invalidateReplaceRules(ns)
 	return success("")
 }
 
@@ -109,6 +111,7 @@ func (s *Server) deleteReplaceRule(w http.ResponseWriter, r *http.Request, ri *r
 		}
 	}
 	_ = s.saveArray(ns, "replaceRule", list)
+	s.invalidateReplaceRules(ns)
 	return success("")
 }
 
@@ -134,6 +137,7 @@ func (s *Server) deleteReplaceRules(w http.ResponseWriter, r *http.Request, ri *
 		}
 	}
 	_ = s.saveArray(ns, "replaceRule", list)
+	s.invalidateReplaceRules(ns)
 	return success("")
 }
 

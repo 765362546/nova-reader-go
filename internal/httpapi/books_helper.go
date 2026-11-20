@@ -11,9 +11,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/765362546/novel-reader-go/internal/cache"
 	"github.com/765362546/novel-reader-go/internal/localbook"
 	"github.com/765362546/novel-reader-go/internal/model"
 	"github.com/765362546/novel-reader-go/internal/util"
@@ -268,8 +268,41 @@ func (s *Server) chapterCacheDir(ns string, book *model.Book) string {
 	return dir
 }
 
+// loadChapterCache reads the per-book chapter cache file (cache.json). The
+// file maps chapter index to raw content and is written atomically by store.
+func (s *Server) loadChapterCache(ns string, book *model.Book) map[int]string {
+	out := map[int]string{}
+	raw, err := s.Store.Get("data", ns, bookDirName(book), util.MD5(book.BookUrl), "cache")
+	if err != nil {
+		return out
+	}
+	var data map[string]string
+	if json.Unmarshal(raw, &data) != nil {
+		return out
+	}
+	for k, v := range data {
+		if idx, err := parseInt(k); err == nil {
+			out[idx] = v
+		}
+	}
+	return out
+}
+
+func (s *Server) saveChapterCache(ns string, book *model.Book, data map[int]string) error {
+	raw := make(map[string]string, len(data))
+	for k, v := range data {
+		raw[itoa(k)] = v
+	}
+	return s.Store.Save(raw, "data", ns, bookDirName(book), util.MD5(book.BookUrl), "cache")
+}
+
 func (s *Server) cachedChapterSet(ns string, book *model.Book) map[int]bool {
 	out := map[int]bool{}
+	for idx := range s.loadChapterCache(ns, book) {
+		out[idx] = true
+	}
+	// Legacy caches stored one .txt file per chapter; count them too so an
+	// existing cache is not re-downloaded after the format change.
 	dir := s.chapterCacheDir(ns, book)
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
@@ -283,15 +316,32 @@ func (s *Server) cachedChapterSet(ns string, book *model.Book) map[int]bool {
 	return out
 }
 
+func (s *Server) chapterListKey(ns string, book *model.Book) string {
+	return ns + "\x00" + book.BookUrl
+}
+
+func (s *Server) invalidateChapterList(ns string, book *model.Book) {
+	if book != nil {
+		s.chapterListCache.Delete(s.chapterListKey(ns, book))
+	}
+}
+
 func (s *Server) chapterList(ns string, book *model.Book, sourceStr string, refresh bool) ([]*model.BookChapter, error) {
 	if book == nil {
 		return nil, errors.New("书籍信息错误")
+	}
+	key := s.chapterListKey(ns, book)
+	if !refresh {
+		if cached, ok := s.chapterListCache.Get(key); ok {
+			return cached, nil
+		}
 	}
 	md5 := util.MD5(book.BookUrl)
 	var cached []*model.BookChapter
 	if !refresh {
 		if raw, err := s.Store.Get("data", ns, bookDirName(book), md5); err == nil {
 			if json.Unmarshal(raw, &cached) == nil && len(cached) > 0 {
+				s.chapterListCache.Put(key, cached)
 				return cached, nil
 			}
 		}
@@ -328,6 +378,11 @@ func (s *Server) chapterList(ns string, book *model.Book, sourceStr string, refr
 	}
 	if list == nil {
 		list = []*model.BookChapter{}
+	}
+	// Only cache non-empty results so a transient empty response does not
+	// pin the book to an empty chapter list.
+	if len(list) > 0 {
+		s.chapterListCache.Put(key, list)
 	}
 	_ = s.Store.SavePretty(list, "data", ns, bookDirName(book), md5)
 	s.saveShelfBookLatestChapter(ns, book, list)
@@ -492,9 +547,7 @@ func (s *Server) mergeBookCacheInfo(book *model.Book) {
 	if book == nil {
 		return
 	}
-	s.cacheMu.Lock()
-	cached := s.bookInfoCache[book.BookUrl]
-	s.cacheMu.Unlock()
+	cached, _ := s.bookInfoCache.Get(book.BookUrl)
 	if cached == nil {
 		return
 	}
@@ -522,19 +575,16 @@ func (s *Server) mergeBookCacheInfo(book *model.Book) {
 }
 
 func (s *Server) saveBookInfoCache(books ...*model.Book) {
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
 	for _, b := range books {
 		if b != nil && b.BookUrl != "" {
-			s.bookInfoCache[b.BookUrl] = b
+			s.bookInfoCache.Put(b.BookUrl, b)
 		}
 	}
 }
 
 func (s *Server) cachedBookInfo(url string) *model.Book {
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-	return s.bookInfoCache[url]
+	b, _ := s.bookInfoCache.Get(url)
+	return b
 }
 
 func (s *Server) invalidList(ns string) []map[string]any {
@@ -702,10 +752,70 @@ func searchBookFromBook(b *model.Book) *model.SearchBook {
 
 // ---------------------------------------------------------------- content
 
+func contentCacheKey(ns string, book *model.Book, index int) string {
+	return ns + "\x00" + util.MD5(book.BookUrl) + "\x00" + itoa(index)
+}
+
+// chapterCacheContent returns a chapter from the in-memory LRU, the per-book
+// cache file, or a legacy per-chapter .txt file.
+func (s *Server) chapterCacheContent(ns string, book *model.Book, index int) (string, bool) {
+	key := contentCacheKey(ns, book, index)
+	if v, ok := s.contentCache.Get(key); ok {
+		return v, true
+	}
+	if v, ok := s.loadChapterCache(ns, book)[index]; ok {
+		s.contentCache.Put(key, v)
+		return v, true
+	}
+	if raw, err := os.ReadFile(filepath.Join(s.chapterCacheDir(ns, book), fmt.Sprintf("%d.txt", index))); err == nil {
+		v := string(raw)
+		s.contentCache.Put(key, v)
+		return v, true
+	}
+	return "", false
+}
+
+// putChapterCacheContent stores one chapter, rewriting the per-book file.
+func (s *Server) putChapterCacheContent(ns string, book *model.Book, index int, content string) error {
+	s.contentCache.Put(contentCacheKey(ns, book, index), content)
+	s.chapterCacheMu.Lock()
+	defer s.chapterCacheMu.Unlock()
+	data := s.loadChapterCache(ns, book)
+	data[index] = content
+	return s.saveChapterCache(ns, book, data)
+}
+
+// mergeChapterCache stores a batch of chapters with a single file rewrite,
+// used by the bulk caching SSE job.
+func (s *Server) mergeChapterCache(ns string, book *model.Book, items map[int]string) error {
+	if len(items) == 0 {
+		return nil
+	}
+	for idx, content := range items {
+		s.contentCache.Put(contentCacheKey(ns, book, idx), content)
+	}
+	s.chapterCacheMu.Lock()
+	defer s.chapterCacheMu.Unlock()
+	data := s.loadChapterCache(ns, book)
+	for idx, content := range items {
+		data[idx] = content
+	}
+	return s.saveChapterCache(ns, book, data)
+}
+
+func (s *Server) invalidateContentCache(ns string, book *model.Book) {
+	if book == nil {
+		return
+	}
+	prefix := ns + "\x00" + util.MD5(book.BookUrl) + "\x00"
+	s.contentCache.DeleteWhere(func(key string) bool {
+		return strings.HasPrefix(key, prefix)
+	})
+}
+
 func (s *Server) chapterContent(ns string, book *model.Book, chapter *model.BookChapter) (string, error) {
-	cacheFile := filepath.Join(s.chapterCacheDir(ns, book), fmt.Sprintf("%d.txt", chapter.Index))
-	if raw, err := os.ReadFile(cacheFile); err == nil {
-		return string(raw), nil
+	if content, ok := s.chapterCacheContent(ns, book, chapter.Index); ok {
+		return content, nil
 	}
 	if book.Origin == model.BookTypeLocal {
 		if localbook.IsEpub(book) {
@@ -720,46 +830,53 @@ func (s *Server) chapterContent(ns string, book *model.Book, chapter *model.Book
 		}
 		content, err := localbook.GetContent(book, chapter, s.App.WorkDir)
 		if err == nil && localbook.IsEpub(book) {
-			_ = os.MkdirAll(filepath.Dir(cacheFile), 0o755)
-			_ = os.WriteFile(cacheFile, []byte(content), 0o644)
+			_ = s.putChapterCacheContent(ns, book, chapter.Index, content)
 		}
 		return content, err
 	}
 	return "", nil
 }
 
-var (
-	replaceRegexMu    sync.RWMutex
-	replaceRegexCache = map[string]*regexp.Regexp{}
-)
+var replaceRegexCache = cache.New[string, *regexp.Regexp](2048)
 
 func cachedRegexp(pattern string) (*regexp.Regexp, error) {
-	replaceRegexMu.RLock()
-	re := replaceRegexCache[pattern]
-	replaceRegexMu.RUnlock()
-	if re != nil {
+	if re, ok := replaceRegexCache.Get(pattern); ok {
 		return re, nil
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return nil, err
 	}
-	replaceRegexMu.Lock()
-	replaceRegexCache[pattern] = re
-	replaceRegexMu.Unlock()
+	replaceRegexCache.Put(pattern, re)
 	return re, nil
 }
 
-func (s *Server) applyReplaceRules(ns, content string) string {
+// replaceRulesFor returns the namespace's replace rules sorted by order. The
+// parsed slice is cached and invalidated whenever rules are saved or deleted.
+func (s *Server) replaceRulesFor(ns string) []*model.ReplaceRule {
+	if rules, ok := s.replaceRuleCache.Get(ns); ok {
+		return rules
+	}
 	raw, err := s.Store.Get("data", ns, "replaceRule")
 	if err != nil {
-		return content
+		s.replaceRuleCache.Put(ns, nil)
+		return nil
 	}
 	var rules []*model.ReplaceRule
 	if json.Unmarshal(raw, &rules) != nil {
-		return content
+		return nil
 	}
 	sort.SliceStable(rules, func(i, j int) bool { return rules[i].Order < rules[j].Order })
+	s.replaceRuleCache.Put(ns, rules)
+	return rules
+}
+
+func (s *Server) invalidateReplaceRules(ns string) {
+	s.replaceRuleCache.Delete(ns)
+}
+
+func (s *Server) applyReplaceRules(ns, content string) string {
+	rules := s.replaceRulesFor(ns)
 	for _, r := range rules {
 		if r == nil || !r.IsEnabled || r.Pattern == "" {
 			continue

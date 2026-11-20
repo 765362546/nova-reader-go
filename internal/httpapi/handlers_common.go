@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/765362546/novel-reader-go/internal/model"
+	"github.com/765362546/novel-reader-go/internal/rule"
 )
 
 func (s *Server) loadArray(ns, name string) []json.RawMessage {
@@ -84,6 +85,7 @@ func replaceAt(list []json.RawMessage, i int, raw json.RawMessage) []json.RawMes
 func (s *Server) deleteUserBookSourceFile(ns string) {
 	_ = s.Store.Delete("data", ns, "bookSource")
 	s.invalidateSourceIndex(ns)
+	rule.CloseAllSourceClients()
 }
 
 func isSvgOrImage(b []byte) bool {

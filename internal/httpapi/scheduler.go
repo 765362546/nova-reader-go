@@ -16,6 +16,9 @@ import (
 // These are best-effort — they recover from panics and log errors but never
 // crash the server. Call it from (*Server).Run before ListenAndServe.
 func (s *Server) StartScheduler() {
+	if s.refreshSem == nil {
+		s.refreshSem = make(chan struct{}, refreshWorkers)
+	}
 	go s.shelfUpdateJob()
 	go s.clearUserJob()
 }
@@ -36,12 +39,23 @@ func (s *Server) shelfUpdateJob() {
 			}()
 			logger.Info("shelf update job started")
 			start := time.Now()
-			s.refreshNamespace("default")
+			s.Sessions.Cleanup()
+			namespaces := []string{"default"}
 			if s.App.Secure {
-				for _, u := range s.loadUsernames() {
-					s.refreshNamespace(u)
-				}
+				namespaces = append(namespaces, s.loadUsernames()...)
 			}
+			// Namespaces refresh in parallel; refreshNamespace shares a single
+			// server-wide semaphore so total outbound concurrency stays capped.
+			var wg sync.WaitGroup
+			for _, ns := range namespaces {
+				ns := ns
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					s.refreshNamespace(ns)
+				}()
+			}
+			wg.Wait()
 			logger.Info("shelf update job finished", "duration_ms", time.Since(start).Milliseconds())
 		}()
 	}
@@ -50,6 +64,8 @@ func (s *Server) shelfUpdateJob() {
 const (
 	refreshWorkers     = 8
 	refreshBookTimeout = 90 * time.Second
+	// Books checked within this window are skipped by the periodic job.
+	refreshSkipWindow = 5 * time.Minute
 )
 
 type refreshOutcome struct {
@@ -64,13 +80,19 @@ func (s *Server) refreshNamespace(ns string) {
 	if len(books) == 0 {
 		return
 	}
-	sem := make(chan struct{}, refreshWorkers)
+	sem := s.refreshSem
+	if sem == nil {
+		sem = make(chan struct{}, refreshWorkers)
+	}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	updated := false
 
 	for i, book := range books {
 		if book.Origin == model.BookTypeLocal || !book.CanUpdate {
+			continue
+		}
+		if book.LastCheckTime > 0 && time.Since(time.UnixMilli(book.LastCheckTime)) < refreshSkipWindow {
 			continue
 		}
 		srcStr := s.sourceStringFromRequest(nil, ns, book.Origin)

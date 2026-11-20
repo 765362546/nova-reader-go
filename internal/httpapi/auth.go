@@ -62,6 +62,18 @@ func (s *Sessions) destroy(id string) {
 	s.mu.Unlock()
 }
 
+// Cleanup evicts expired sessions; it is called periodically by the scheduler.
+func (s *Sessions) Cleanup() {
+	now := time.Now().UnixMilli()
+	s.mu.Lock()
+	for id, ss := range s.m {
+		if ss.ExpireAt < now {
+			delete(s.m, id)
+		}
+	}
+	s.mu.Unlock()
+}
+
 func md5hex(v string) string {
 	sum := md5.Sum([]byte(v))
 	return hex.EncodeToString(sum[:])

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"archive/zip"
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -360,7 +361,6 @@ func (s *Server) cacheBookSSE(w http.ResponseWriter, r *http.Request, ri *reqInf
 	if refresh <= 0 {
 		cached = s.cachedChapterSet(ns, book)
 	}
-	dir := s.chapterCacheDir(ns, book)
 	wb := webbook.New(&bs)
 	successCount, failedCount := 0, 0
 	for i := 0; i < len(chapters); i += concurrent {
@@ -370,6 +370,7 @@ func (s *Server) cacheBookSSE(w http.ResponseWriter, r *http.Request, ri *reqInf
 		}
 		var wg sync.WaitGroup
 		var mu sync.Mutex
+		batch := map[int]string{}
 		for j := i; j < end; j++ {
 			if cached[j] {
 				continue
@@ -388,13 +389,15 @@ func (s *Server) cacheBookSSE(w http.ResponseWriter, r *http.Request, ri *reqInf
 					failedCount++
 					return
 				}
-				cacheFile := filepath.Join(dir, fmt.Sprintf("%d.txt", idx))
-				_ = os.WriteFile(cacheFile, []byte(content), 0o644)
+				batch[idx] = content
 				cached[idx] = true
 				successCount++
 			}(j)
 		}
 		wg.Wait()
+		if err := s.mergeChapterCache(ns, book, batch); err != nil {
+			logger.Warn("save chapter cache failed", "namespace", ns, "book", book.Name, "error", err)
+		}
 		sseWrite(w, f, "", map[string]any{
 			"cachedCount":  len(cached),
 			"successCount": successCount,
@@ -514,19 +517,24 @@ func (s *Server) exportBook(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 		return failure(err.Error())
 	}
 	dir := s.chapterCacheDir(ns, book)
-	titles := make([]string, 0, len(chapters))
-	contents := make([]string, 0, len(chapters))
-	for i, c := range chapters {
-		titles = append(titles, c.Title)
-		raw, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("%d.txt", i)))
-		if err != nil {
-			contents = append(contents, "暂无缓存内容。")
-			continue
-		}
-		contents = append(contents, string(raw))
-	}
 	author := util.FormatAuthor(book.Author)
+	cacheData := s.loadChapterCache(ns, book)
 	if isEpub > 0 {
+		titles := make([]string, 0, len(chapters))
+		contents := make([]string, 0, len(chapters))
+		for i, c := range chapters {
+			titles = append(titles, c.Title)
+			if content, ok := cacheData[i]; ok {
+				contents = append(contents, content)
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("%d.txt", i)))
+			if err != nil {
+				contents = append(contents, "暂无缓存内容。")
+				continue
+			}
+			contents = append(contents, string(raw))
+		}
 		filename := fmt.Sprintf("《%s》作者：%s.epub", util.FormatBookName(book.Name), author)
 		tmp := filepath.Join(s.Store.Root, "assets", ns, "export", filename)
 		_ = os.MkdirAll(filepath.Dir(tmp), 0o755)
@@ -540,13 +548,32 @@ func (s *Server) exportBook(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 	filename := fmt.Sprintf("《%s》作者：%s.txt", util.FormatBookName(book.Name), author)
 	tmp := filepath.Join(s.Store.Root, "assets", ns, "export", filename)
 	_ = os.MkdirAll(filepath.Dir(tmp), 0o755)
-	var sb strings.Builder
-	sb.WriteString(book.Name + "\n作者：" + author + "\n简介：" + util.HTMLFormat(dstr(book.Intro)) + "\n")
-	for i := range chapters {
-		sb.WriteString("\n\n" + titles[i] + "\n")
-		sb.WriteString(contents[i] + "\n")
+	f, err := os.Create(tmp)
+	if err != nil {
+		return failure("导出失败: " + err.Error())
 	}
-	_ = os.WriteFile(tmp, []byte(sb.String()), 0o644)
+	// Stream chapters straight to disk instead of building the whole book in
+	// memory, so large exports do not spike the process RSS.
+	bw := bufio.NewWriterSize(f, 64<<10)
+	_, _ = bw.WriteString(book.Name + "\n作者：" + author + "\n简介：" + util.HTMLFormat(dstr(book.Intro)) + "\n")
+	for i, c := range chapters {
+		_, _ = bw.WriteString("\n\n" + c.Title + "\n")
+		if content, ok := cacheData[i]; ok {
+			_, _ = bw.WriteString(content)
+		} else if raw, rerr := os.ReadFile(filepath.Join(dir, fmt.Sprintf("%d.txt", i))); rerr == nil {
+			_, _ = bw.Write(raw)
+		} else {
+			_, _ = bw.WriteString("暂无缓存内容。")
+		}
+		_, _ = bw.WriteString("\n")
+	}
+	if err := bw.Flush(); err != nil {
+		_ = f.Close()
+		return failure("导出失败: " + err.Error())
+	}
+	if err := f.Close(); err != nil {
+		return failure("导出失败: " + err.Error())
+	}
 	w.Header().Set("Content-Disposition", "attachment; filename="+url.QueryEscape(filename))
 	http.ServeFile(w, r, tmp)
 	return nil
@@ -666,13 +693,17 @@ func (s *Server) searchBookContent(w http.ResponseWriter, r *http.Request, ri *r
 		return failure(err.Error())
 	}
 	dir := s.chapterCacheDir(ns, book)
+	cacheData := s.loadChapterCache(ns, book)
 	var results []*model.SearchResult
 	for i, c := range chapters {
-		raw, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("%d.txt", i)))
-		if err != nil {
-			continue
+		content, ok := cacheData[i]
+		if !ok {
+			raw, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("%d.txt", i)))
+			if err != nil {
+				continue
+			}
+			content = string(raw)
 		}
-		content := string(raw)
 		lower := strings.ToLower(content)
 		q := strings.ToLower(query)
 		from := 0

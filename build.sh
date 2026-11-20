@@ -41,5 +41,14 @@ else
 fi
 
 echo "==> 编译 Go 二进制"
+# 预生成 .gz 静态资源，服务端在 Accept-Encoding 含 gzip 时直接返回，省去运行时压缩。
+if [ -f web/dist/index.html ] && command -v gzip >/dev/null 2>&1; then
+  echo "==> 预压缩静态资源 (gzip -9)"
+  find web/dist -type f \( -name '*.js' -o -name '*.css' -o -name '*.html' \
+      -o -name '*.svg' -o -name '*.json' -o -name '*.map' \) -print0 |
+    while IFS= read -r -d '' f; do
+      [ -f "$f.gz" ] || gzip -9 -k -f "$f"
+    done
+fi
 go build -o novel-server ./cmd/server
 echo "完成: ./novel-server"
