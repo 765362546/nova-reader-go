@@ -132,6 +132,7 @@ go run ./cmd/server
 | `READER_EXPORT_NO_CHAPTER_NAME` | `false` | 导出时不写章节名 |
 | `READER_EXPORT_PICTURE_FILE` | `false` | 导出图片文件 |
 | `READER_WEB_URL` | 空 | 对外访问地址 |
+| `READER_FONTS` | 空 | 系统可用字体列表（返回给前端） |
 
 布尔值支持 `true/false`、`1/0`、`yes/no`、`on/off`。
 

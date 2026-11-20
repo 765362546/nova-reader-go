@@ -679,7 +679,7 @@ func (s *Server) getSystemInfo(w http.ResponseWriter, r *http.Request, ri *reqIn
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	return success(map[string]any{
-		"fonts":       os.Getenv("reader.system.fonts"),
+		"fonts":       s.App.Fonts,
 		"freeMemory":  fmt.Sprintf("%dM", (ms.HeapAlloc)/1024/1024),
 		"totalMemory": fmt.Sprintf("%dM", ms.HeapSys/1024/1024),
 		"maxMemory":   "0M",

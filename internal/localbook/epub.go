@@ -18,9 +18,9 @@ import (
 )
 
 type opfItem struct {
-	ID        string `xml:"id,attr"`
-	Href      string `xml:"href,attr"`
-	MediaType string `xml:"media-type,attr"`
+	ID         string `xml:"id,attr"`
+	Href       string `xml:"href,attr"`
+	MediaType  string `xml:"media-type,attr"`
 	Properties string `xml:"properties,attr"`
 }
 
@@ -189,11 +189,8 @@ func EpubChapterList(book *model.Book, workDir string) ([]*model.BookChapter, er
 	if book.Author == "" {
 		book.Author = strings.TrimSpace(opf.Metadata.Creator)
 	}
-	if book.Intro == nil || *book.Intro == "" {
-		intro := util.HTMLFormat(stripTags(opf.Metadata.Description))
-		if intro != "" {
-			book.Intro = &intro
-		}
+	if book.Intro == "" {
+		book.Intro = util.HTMLFormat(stripTags(opf.Metadata.Description))
 	}
 
 	baseByID := map[string]opfItem{}
@@ -279,7 +276,7 @@ func EpubChapterList(book *model.Book, workDir string) ([]*model.BookChapter, er
 	}
 	book.TotalChapterNum = len(tocChapters)
 	last := tocChapters[len(tocChapters)-1].Title
-	book.LatestChapterTitle = &last
+	book.LatestChapterTitle = last
 	return tocChapters, nil
 }
 

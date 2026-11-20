@@ -61,8 +61,8 @@ func TextChapterList(book *model.Book, workDir, rule string, defaultRule bool) (
 	if err != nil {
 		return nil, fmt.Errorf("本地文件不存在")
 	}
-	if book.Charset == nil || *book.Charset == "" {
-		book.Charset = &charset
+	if book.Charset == "" {
+		book.Charset = charset
 	}
 	if rule == "" {
 		rule = pickTxtRule(text)
@@ -207,8 +207,7 @@ func indexChapters(book *model.Book, chapters []*model.BookChapter) {
 		c.BookUrl = book.BookUrl
 	}
 	if len(chapters) > 0 {
-		last := chapters[len(chapters)-1].Title
-		book.LatestChapterTitle = &last
+		book.LatestChapterTitle = chapters[len(chapters)-1].Title
 	}
 	book.TotalChapterNum = len(chapters)
 }

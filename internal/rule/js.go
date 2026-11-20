@@ -108,7 +108,7 @@ func (a *Analyze) EvalJS(code string, result any) any {
 		"getElement": func(call goja.FunctionCall) goja.Value {
 			rule := argString(call, 0)
 			return vm.ToValue(strings.Join(a.GetStringList(rule), "\n"))
-			},
+		},
 		"getElements": func(call goja.FunctionCall) goja.Value {
 			rule := argString(call, 0)
 			list := a.GetStringList(rule)
@@ -268,14 +268,14 @@ func bookMap(b *model.Book) map[string]any {
 		"originName":         b.OriginName,
 		"name":               b.Name,
 		"author":             b.Author,
-		"kind":               deref(b.Kind),
-		"coverUrl":           deref(b.CoverUrl),
-		"intro":              deref(b.Intro),
+		"kind":               b.Kind,
+		"coverUrl":           b.CoverUrl,
+		"intro":              b.Intro,
 		"type":               b.Type,
 		"group":              b.Group,
-		"latestChapterTitle": deref(b.LatestChapterTitle),
+		"latestChapterTitle": b.LatestChapterTitle,
 		"totalChapterNum":    b.TotalChapterNum,
-		"durChapterTitle":    deref(b.DurChapterTitle),
+		"durChapterTitle":    b.DurChapterTitle,
 		"durChapterIndex":    b.DurChapterIndex,
 		"durChapterPos":      b.DurChapterPos,
 		"variable":           deref(b.Variable),
@@ -287,14 +287,14 @@ func chapterMap(c *model.BookChapter) map[string]any {
 		return map[string]any{}
 	}
 	return map[string]any{
-		"url":     c.URL,
-		"title":   c.Title,
-		"baseUrl": c.BaseURL,
-		"bookUrl": c.BookUrl,
-		"index":   c.Index,
-		"tag":     deref(c.Tag),
-		"start":   c.Start,
-		"end":     c.End,
+		"url":      c.URL,
+		"title":    c.Title,
+		"baseUrl":  c.BaseURL,
+		"bookUrl":  c.BookUrl,
+		"index":    c.Index,
+		"tag":      deref(c.Tag),
+		"start":    c.Start,
+		"end":      c.End,
 		"variable": deref(c.Variable),
 	}
 }

@@ -20,8 +20,6 @@ import (
 	"github.com/765362546/novel-reader-go/internal/webbook"
 )
 
-func pstr(s string) *string { return &s }
-
 func dstr(p *string) string {
 	if p == nil {
 		return ""
@@ -107,7 +105,7 @@ func (s *Server) editShelfBook(ns string, book *model.Book, fn func(*model.Book)
 func (s *Server) saveShelfBookProgress(ns string, book *model.Book, chapter *model.BookChapter) {
 	s.editShelfBook(ns, book, func(exist *model.Book) {
 		exist.DurChapterIndex = chapter.Index
-		exist.DurChapterTitle = pstr(chapter.Title)
+		exist.DurChapterTitle = chapter.Title
 		exist.DurChapterTime = time.Now().UnixMilli()
 	})
 }
@@ -115,7 +113,7 @@ func (s *Server) saveShelfBookProgress(ns string, book *model.Book, chapter *mod
 func (s *Server) saveShelfBookLatestChapter(ns string, book *model.Book, chapters []*model.BookChapter) {
 	s.editShelfBook(ns, book, func(exist *model.Book) {
 		if len(chapters) > 0 {
-			exist.LatestChapterTitle = pstr(chapters[len(chapters)-1].Title)
+			exist.LatestChapterTitle = chapters[len(chapters)-1].Title
 		}
 		if len(chapters)-exist.TotalChapterNum > 0 {
 			exist.LastCheckCount = len(chapters) - exist.TotalChapterNum
@@ -364,9 +362,7 @@ func (s *Server) chapterList(ns string, book *model.Book, sourceStr string, refr
 		if e := json.Unmarshal([]byte(sourceStr), &bs); e != nil {
 			return nil, errors.New("书源信息错误")
 		}
-		start := time.Now()
 		list, err = webbook.New(&bs).ChapterList(book)
-		_ = start
 	}
 	if err != nil {
 		if sourceStr != "" {
@@ -557,19 +553,19 @@ func (s *Server) mergeBookCacheInfo(book *model.Book) {
 	if book.Author == "" {
 		book.Author = cached.Author
 	}
-	if book.CoverUrl == nil {
+	if book.CoverUrl == "" {
 		book.CoverUrl = cached.CoverUrl
 	}
 	if book.TocUrl == "" {
 		book.TocUrl = cached.TocUrl
 	}
-	if book.Intro == nil {
+	if book.Intro == "" {
 		book.Intro = cached.Intro
 	}
-	if book.LatestChapterTitle == nil {
+	if book.LatestChapterTitle == "" {
 		book.LatestChapterTitle = cached.LatestChapterTitle
 	}
-	if book.WordCount == nil {
+	if book.WordCount == "" {
 		book.WordCount = cached.WordCount
 	}
 }

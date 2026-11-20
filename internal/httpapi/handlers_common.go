@@ -87,7 +87,3 @@ func (s *Server) deleteUserBookSourceFile(ns string) {
 	s.invalidateSourceIndex(ns)
 	rule.CloseAllSourceClients()
 }
-
-func isSvgOrImage(b []byte) bool {
-	return len(b) > 0
-}

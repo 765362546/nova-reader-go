@@ -11,15 +11,17 @@ import (
 )
 
 var (
-	nameRegex       = regexp.MustCompile(`\s+作\s*者.*|\s+\S+\s+著`)
-	authorRegex     = regexp.MustCompile(`^\s*作\s*者[:：\s]+|\s+著`)
-	fileNameRegex   = regexp.MustCompile(`[\\/:*?"<>|.]`)
-	wrapHTMLRegex   = regexp.MustCompile(`</?(?:div|p|br|hr|h\d|article|dd|dl)[^>]*>`)
-	commentRegex    = regexp.MustCompile(`<!--[^>]*-->`)
-	spaceLineRegex  = regexp.MustCompile(`\s*\n+\s*`)
-	imgSrcRegex     = regexp.MustCompile(`<img[^>]*src *= *"([^"]*)"[^>]*>`)
-	htmlTagStrip    = regexp.MustCompile(`<[script>]*.*?>|&nbsp;`)
-	brDivRegex      = regexp.MustCompile(`(?i)<(br[\s/]*|/*p\b.*?|/*div\b.*?)>`)
+	nameRegex         = regexp.MustCompile(`\s+作\s*者.*|\s+\S+\s+著`)
+	authorRegex       = regexp.MustCompile(`^\s*作\s*者[:：\s]+|\s+著`)
+	authorPrefixRegex = regexp.MustCompile(`作\s*者[\s:：]*`)
+	authorSpaceRegex  = regexp.MustCompile(`\s+`)
+	fileNameRegex     = regexp.MustCompile(`[\\/:*?"<>|.]`)
+	wrapHTMLRegex     = regexp.MustCompile(`</?(?:div|p|br|hr|h\d|article|dd|dl)[^>]*>`)
+	commentRegex      = regexp.MustCompile(`<!--[^>]*-->`)
+	spaceLineRegex    = regexp.MustCompile(`\s*\n+\s*`)
+	imgSrcRegex       = regexp.MustCompile(`<img[^>]*src *= *"([^"]*)"[^>]*>`)
+	htmlTagStrip      = regexp.MustCompile(`<[script>]*.*?>|&nbsp;`)
+	brDivRegex        = regexp.MustCompile(`(?i)<(br[\s/]*|/*p\b.*?|/*div\b.*?)>`)
 )
 
 func FormatBookName(name string) string {
@@ -31,8 +33,8 @@ func FormatBookAuthor(author string) string {
 }
 
 func FormatAuthor(author string) string {
-	out := regexp.MustCompile(`作\s*者[\s:：]*`).ReplaceAllString(author, "")
-	out = regexp.MustCompile(`\s+`).ReplaceAllString(out, " ")
+	out := authorPrefixRegex.ReplaceAllString(author, "")
+	out = authorSpaceRegex.ReplaceAllString(out, " ")
 	return strings.TrimSpace(out)
 }
 

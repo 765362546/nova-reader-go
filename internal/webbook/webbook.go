@@ -70,8 +70,6 @@ func (w *WebBook) contentRule() *model.ContentRule {
 	return w.Source.RuleContent
 }
 
-func ptr(s string) *string { return &s }
-
 func val(s *string) string {
 	if s == nil {
 		return ""
@@ -297,20 +295,19 @@ func (w *WebBook) getSearchItem(item any, a *rule.Analyze, baseURL, requestURL s
 	}
 	sb.Author = util.FormatBookAuthor(a.GetString(val(listRule.Author)))
 	if kindList := a.GetStringList(val(listRule.Kind)); len(kindList) > 0 {
-		sb.Kind = ptr(strings.Join(kindList, ","))
+		sb.Kind = strings.Join(kindList, ",")
 	}
 	if wc := util.WordCountFormat(a.GetString(val(listRule.WordCount))); wc != "" {
-		sb.WordCount = ptr(wc)
+		sb.WordCount = wc
 	}
 	if lc := a.GetString(val(listRule.LastChapter)); lc != "" {
-		sb.LatestChapterTitle = ptr(lc)
+		sb.LatestChapterTitle = lc
 	}
 	if intro := util.HTMLFormat(a.GetString(val(listRule.Intro))); intro != "" {
-		sb.Intro = ptr(intro)
+		sb.Intro = intro
 	}
 	if cover := a.GetString(val(listRule.CoverUrl)); cover != "" {
-		c := util.AbsoluteURL(baseURL, cover)
-		sb.CoverUrl = &c
+		sb.CoverUrl = util.AbsoluteURL(baseURL, cover)
 	}
 	sb.BookUrl = a.GetStringURL(val(listRule.BookUrl))
 	if sb.BookUrl == "" || sb.BookUrl == baseURL {
@@ -367,20 +364,19 @@ func (w *WebBook) analyzeBookInfo(book *model.Book, body string, a *rule.Analyze
 		book.Author = author
 	}
 	if kind := a.GetStringList(val(infoRule.Kind)); len(kind) > 0 {
-		book.Kind = ptr(strings.Join(kind, ","))
+		book.Kind = strings.Join(kind, ",")
 	}
 	if wc := util.WordCountFormat(a.GetString(val(infoRule.WordCount))); wc != "" {
-		book.WordCount = ptr(wc)
+		book.WordCount = wc
 	}
 	if lc := a.GetString(val(infoRule.LastChapter)); lc != "" {
-		book.LatestChapterTitle = ptr(lc)
+		book.LatestChapterTitle = lc
 	}
 	if intro := util.HTMLFormat(a.GetString(val(infoRule.Intro))); intro != "" {
-		book.Intro = ptr(intro)
+		book.Intro = intro
 	}
 	if cover := a.GetString(val(infoRule.CoverUrl)); cover != "" {
-		c := util.AbsoluteURL(redirectURL, cover)
-		book.CoverUrl = &c
+		book.CoverUrl = util.AbsoluteURL(redirectURL, cover)
 	}
 	book.TocUrl = a.GetStringURL(val(infoRule.TocUrl))
 	if book.TocUrl == "" {
@@ -484,8 +480,7 @@ func (w *WebBook) chapterListAt(book *model.Book, tocURL string) ([]*model.BookC
 		c.Index = i
 	}
 	if len(chapters) > 0 {
-		last := chapters[len(chapters)-1].Title
-		book.LatestChapterTitle = &last
+		book.LatestChapterTitle = chapters[len(chapters)-1].Title
 	}
 	book.TotalChapterNum = len(chapters)
 	book.LatestChapterTime = time.Now().UnixMilli()

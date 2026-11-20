@@ -555,7 +555,7 @@ func (s *Server) exportBook(w http.ResponseWriter, r *http.Request, ri *reqInfo)
 	// Stream chapters straight to disk instead of building the whole book in
 	// memory, so large exports do not spike the process RSS.
 	bw := bufio.NewWriterSize(f, 64<<10)
-	_, _ = bw.WriteString(book.Name + "\n作者：" + author + "\n简介：" + util.HTMLFormat(dstr(book.Intro)) + "\n")
+	_, _ = bw.WriteString(book.Name + "\n作者：" + author + "\n简介：" + util.HTMLFormat(book.Intro) + "\n")
 	for i, c := range chapters {
 		_, _ = bw.WriteString("\n\n" + c.Title + "\n")
 		if content, ok := cacheData[i]; ok {

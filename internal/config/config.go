@@ -27,6 +27,7 @@ type Config struct {
 	ExportCharset         string
 	ExportNoChapterName   bool
 	ExportPictureFile     bool
+	Fonts                 string
 }
 
 type Server struct {
@@ -72,6 +73,7 @@ func Load() *App {
 	app.ExportCharset = envString("READER_EXPORT_CHARSET", app.ExportCharset)
 	app.ExportNoChapterName = envBool("READER_EXPORT_NO_CHAPTER_NAME", app.ExportNoChapterName)
 	app.ExportPictureFile = envBool("READER_EXPORT_PICTURE_FILE", app.ExportPictureFile)
+	app.Fonts = envString("READER_FONTS", app.Fonts)
 
 	app.Port = envInt("READER_PORT", app.Port)
 	app.WebUrl = envString("READER_WEB_URL", app.WebUrl)

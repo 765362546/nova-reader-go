@@ -120,8 +120,7 @@ func (s *Server) refreshNamespace(ns string) {
 				}
 				books[index].TotalChapterNum = out.total
 				if out.latest != "" {
-					title := out.latest
-					books[index].LatestChapterTitle = &title
+					books[index].LatestChapterTitle = out.latest
 				}
 				books[index].LastCheckTime = time.Now().UnixMilli()
 				mu.Lock()

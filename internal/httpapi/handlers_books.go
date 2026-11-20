@@ -60,7 +60,6 @@ func removeAtIdx[T any](list []T, i int) []T {
 	return out
 }
 
-
 func bookFromAny(v any) *model.Book {
 	b, _ := json.Marshal(v)
 	var book model.Book
@@ -98,7 +97,7 @@ func (s *Server) getBookshelf(w http.ResponseWriter, r *http.Request, ri *reqInf
 					bs := s.bookSourceByURL(ri.Namespace, src)
 					if bs != nil && bs.BookSourceUrl == b.Origin {
 						if list, err := s.chapterList(ri.Namespace, b, src, true); err == nil && len(list) > 0 {
-							b.LatestChapterTitle = pstr(list[len(list)-1].Title)
+							b.LatestChapterTitle = list[len(list)-1].Title
 						}
 						break
 					}
@@ -218,19 +217,19 @@ func (s *Server) saveBook(w http.ResponseWriter, r *http.Request, ri *reqInfo) *
 		if book.Author == "" {
 			book.Author = info.Author
 		}
-		if book.CoverUrl == nil {
+		if book.CoverUrl == "" {
 			book.CoverUrl = info.CoverUrl
 		}
 		if book.TocUrl == "" {
 			book.TocUrl = info.TocUrl
 		}
-		if book.Intro == nil {
+		if book.Intro == "" {
 			book.Intro = info.Intro
 		}
-		if book.LatestChapterTitle == nil {
+		if book.LatestChapterTitle == "" {
 			book.LatestChapterTitle = info.LatestChapterTitle
 		}
-		if book.WordCount == nil {
+		if book.WordCount == "" {
 			book.WordCount = info.WordCount
 		}
 	}
@@ -758,7 +757,7 @@ func (s *Server) getBookContent(w http.ResponseWriter, r *http.Request, ri *reqI
 		}
 	}
 	book.DurChapterIndex = chapter.Index
-	book.DurChapterTitle = pstr(chapter.Title)
+	book.DurChapterTitle = chapter.Title
 	book.DurChapterTime = time.Now().UnixMilli()
 	if inShelf && cache != 1 {
 		s.saveShelfBookProgress(ns, book, chapter)
@@ -1048,7 +1047,7 @@ func (s *Server) setBookSource(w http.ResponseWriter, r *http.Request, ri *reqIn
 		exist.OriginName = newBook.OriginName
 		exist.BookUrl = newBook.BookUrl
 		exist.TocUrl = newBook.TocUrl
-		if exist.CoverUrl == nil && newBook.CoverUrl != nil {
+		if exist.CoverUrl == "" && newBook.CoverUrl != "" {
 			exist.CoverUrl = newBook.CoverUrl
 		}
 	})
@@ -1248,7 +1247,7 @@ func (s *Server) getTxtTocRules(w http.ResponseWriter, r *http.Request, ri *reqI
 func (s *Server) refreshLocalBook(w http.ResponseWriter, r *http.Request, ri *reqInfo) *ReturnData {
 	if ri.NeedLogin {
 		return failureLogin()
-    }
+	}
 	m := bodyMap(r)
 	var book *model.Book
 	if inner, ok := m["book"].(map[string]any); ok {
@@ -1290,7 +1289,7 @@ func (s *Server) getChapterListByRule(w http.ResponseWriter, r *http.Request, ri
 	}
 	if !s.localFileExists(book) {
 		return failure("文件不存在")
-    }
+	}
 	if localbook.IsEpub(book) {
 		s.extractEpub(book, true)
 	}
@@ -1315,7 +1314,7 @@ func (s *Server) getShelfBookWithCacheInfo(w http.ResponseWriter, r *http.Reques
 	book := s.shelfBookByURL(ri.Namespace, url)
 	if book == nil {
 		return failure("书籍不存在")
-    }
+	}
 	cached := s.cachedChapterSet(ri.Namespace, book)
 	return success(map[string]any{"book": book, "cachedChapterCount": len(cached)})
 }
